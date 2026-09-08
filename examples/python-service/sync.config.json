@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "mode": "one-way-replica",
+  "exclude": [
+    ".vscode",
+    ".idea",
+    ".DS_Store",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "*.pyc",
+    "/build"
+  ],
+  "envFiles": [],
+  "pollingInterval": 1
+}

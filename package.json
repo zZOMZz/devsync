@@ -1,0 +1,27 @@
+{
+  "name": "devsync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-independent, local-to-remote development synchronization powered by Mutagen",
+  "type": "module",
+  "bin": {
+    "devsync": "bin/devsync.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "examples/",
+    "docs/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/cache.test.mjs test/cli.test.mjs test/configure.test.mjs test/core.test.mjs test/engine.test.mjs test/rules.test.mjs test/service.test.mjs",
+    "test:engine": "node --test test/engine.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

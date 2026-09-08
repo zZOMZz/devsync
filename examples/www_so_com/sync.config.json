@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "mode": "one-way-replica",
+  "exclude": [
+    "/.vscode",
+    ".DS_Store",
+    "node_modules",
+    "dist",
+    "/.claude/settings.local.json",
+    "/application/views/http",
+    "/application/views/https",
+    "/resource/http",
+    "/resource/https",
+    "/build/campaigns",
+    "/resource/js/.rollup-stage-*",
+    "/build/.rollup-stage-*",
+    "/resource/js/.rollup-backup-*",
+    "/build/.rollup-backup-*",
+    "/docker/sdk"
+  ],
+  "envFiles": [
+    ".env",
+    "docker/.env"
+  ],
+  "pollingInterval": 1
+}
