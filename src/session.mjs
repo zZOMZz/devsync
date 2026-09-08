@@ -1,14 +1,18 @@
 import path from "node:path";
-import { command, digest, healthy } from "./core.mjs";
+import fs from "node:fs/promises";
+import { command, digest, healthy, readJson, writeJson } from "./core.mjs";
 import { SyncError } from "./errors.mjs";
 import { defaultRules, mutagenIgnores } from "./rules.mjs";
+import { identityPath, prepareSSHTransport } from "./ssh-transport.mjs";
 export const watchPolicy = { mode: "force-poll", pollingInterval: 1 };
-export function fingerprint(root, cfg, rules = defaultRules) {
+export function fingerprint(root, cfg, rules = defaultRules, auth = {}) {
+  const identity = identityPath(root, cfg);
   return digest(
     JSON.stringify({
       root,
       remote: cfg.remote,
       identityFile: cfg.identityFile,
+      ...(identity ? { sshTransport: { version: 1, identity, password: Boolean(auth.password) } } : {}),
       mode: "one-way-replica",
       watchPolicy,
       rules,
@@ -31,7 +35,12 @@ export class Session {
     };
     delete this.env.MUTAGEN_SSH_PATH;
   }
-  run(args, options = {}) {
+  async run(args, options = {}) {
+    // Read the accepted snapshot, never a potentially edited/draft config.
+    // The same path is available to fresh CLI processes and background workers.
+    const transport = await readJson(path.join(this.root, ".sync/ssh.json"), null);
+    if (transport) this.env.MUTAGEN_SSH_PATH = transport.directory;
+    else delete this.env.MUTAGEN_SSH_PATH;
     return command(this.binary, args, {
       env: this.env,
       password: this.auth.password,
@@ -48,7 +57,34 @@ export class Session {
     return (await this.list(options)).find((s) => s.name === this.name);
   }
   async create(cfg, rules = defaultRules) {
-    await this.run(sessionArguments(this.root, cfg, rules));
+    const transport = await prepareSSHTransport(this.root, cfg, this.auth);
+    const file = path.join(this.root, ".sync/ssh.json");
+    const previous = await readJson(file, null);
+    let published = false;
+    try {
+      if (transport || previous) {
+        // SSH_PATH belongs to the daemon, not the CLI command. Stop the old
+        // daemon before switching its snapshot, including when removing a key.
+        // create() also supports direct callers with no daemon yet.
+        await this.get();
+        await this.run(["daemon", "stop"]);
+        // daemon stop acknowledges termination before the socket is removed.
+        const socket = path.join(this.root, ".sync/state/daemon/daemon.sock");
+        const deadline = Date.now() + 20000;
+        while (true) {
+          try { await fs.lstat(socket); }
+          catch (error) { if (error.code === "ENOENT") break; throw error; }
+          if (Date.now() >= deadline)
+            throw new SyncError("SSH_TRANSPORT_BUSY", "旧同步服务尚未退出，私钥配置未切换，请稍后重试。");
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        await writeJson(file, transport);
+        published = true;
+      }
+      await this.run(sessionArguments(this.root, cfg, rules));
+    } finally {
+      if (transport && !published) await fs.rm(transport.directory, { recursive: true, force: true });
+    }
   }
   async pause() {
     if (await this.get())

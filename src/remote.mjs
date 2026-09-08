@@ -3,20 +3,10 @@ import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { command, quote, symlinkSignature, writeJson } from "./core.mjs";
 import { defaultRules, protectedPatterns, patternBody } from "./rules.mjs";
+import { sshOptions } from "./ssh-transport.mjs";
 export async function ssh(root, cfg, auth, script, input, run = command) {
   const r = cfg.remote;
-  const args = [
-    "-p",
-    String(r.port),
-    "-o",
-    "ConnectTimeout=10",
-    "-o",
-    "StrictHostKeyChecking=accept-new",
-    "-o",
-    "NumberOfPasswordPrompts=1",
-  ];
-  if (cfg.identityFile) args.push("-i", cfg.identityFile);
-  if (!auth.password) args.push("-o", "BatchMode=yes");
+  const args = ["-p", String(r.port), ...sshOptions(root, cfg, auth)];
   const destination = `${r.username}@${r.host}`;
   const env = { ...process.env };
   let credentials;
@@ -38,7 +28,6 @@ export async function ssh(root, cfg, auth, script, input, run = command) {
         SYNC_AUTH_FILE: path.join(credentials, "auth.json"),
         NODE_OPTIONS: `--require ${JSON.stringify(fileURLToPath(new URL("./askpass.cjs", import.meta.url)))}`,
       });
-      args.push("-o", "PreferredAuthentications=password");
     }
     args.push(destination, script);
     return await run(process.platform === "win32" ? "ssh.exe" : "ssh", args, {

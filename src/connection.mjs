@@ -51,6 +51,7 @@ export async function sshAliases(home = os.homedir()) {
 }
 
 export function connectionError(error, auth = {}) {
+  if (["SSH_IDENTITY", "SSH_IDENTITY_UNSUPPORTED"].includes(error.code)) return error;
   const message = error.message;
   let field = "connection", help = "连接失败。请检查网络/VPN、地址、SSH 端口和跳板机，再重试。";
   if (/SYNC_PATH_ERROR/.test(message)) {

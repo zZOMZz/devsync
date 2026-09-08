@@ -127,7 +127,7 @@ export class ProjectSync {
         const auth = await this.auth();
         const current = await readJson(path.join(this.dir, "control.json"), {});
         keepAuto = Boolean(current.auto && isProcessAlive(current.pid));
-        const id = fingerprint(this.root, project.config, project.rules);
+        const id = fingerprint(this.root, project.config, project.rules, auth);
         const accepted = await readJson(path.join(this.dir, "accepted.json"), {});
         // Pause before validating a changed target or rules so the old session
         // cannot continue propagating changes while a new decision is pending.

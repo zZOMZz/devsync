@@ -138,3 +138,23 @@ test("status reads an existing session with daemon autostart disabled", async t 
   assert.equal(result.state, "paused");
   assert.equal(result.auto, false);
 });
+
+test("explicit key authentication mode changes require confirmation before resuming", {
+  skip: process.platform === "win32",
+}, async t => {
+  const f = await fixture(t);
+  f.config.identityFile = "/keys/dev";
+  await writeJson(path.join(f.root, ".sync/config.json"), f.config);
+  await f.service.sync({ auto: true, confirm: async () => true });
+  await f.service.sync({ auto: true, confirm: async () => assert.fail("unchanged authentication must reuse acceptance") });
+  const previous = await readJson(path.join(f.root, ".sync/accepted.json"));
+  await writeJson(path.join(f.root, ".sync/control.json"), { auto: true, pid: process.pid });
+  await writeJson(path.join(f.root, ".sync/auth.json"), {});
+  f.calls.length = 0;
+  await assert.rejects(f.service.sync({ confirm: async () => {
+    assert.ok(f.calls.includes("pause"));
+    return false;
+  } }), { code: "CANCELLED" });
+  assert.ok(!f.calls.includes("resume"));
+  assert.deepEqual(await readJson(path.join(f.root, ".sync/accepted.json")), previous);
+});
