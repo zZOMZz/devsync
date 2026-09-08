@@ -88,8 +88,8 @@ try:
         if scenario == 'success':
             mark=send('\x1b[B\x1b[B\r'); wait_for('开发机密码',mark)
             mark=send('not-visible-秘密\r'); wait_for('远端项目绝对路径',mark)
-            mark=send('\x15/srv/alice/中文项目\r'); wait_for('保存配置？',mark)
-            send('\x1b[D\r')
+            mark=send('\x15/srv/alice/中文项目\r'); wait_for('确认保存以上配置？',mark)
+            send('\r')
         elif scenario == 'stage-interrupt':
             mark=send('\r'); wait_for('验证 SSH 连接和认证',mark)
             # Wait until the child is actually running, then interrupt the phase.
@@ -98,8 +98,8 @@ try:
             send('\x03')
         else:
             mark=send('1\n'); wait_for('远端项目绝对路径',mark)
-            mark=send('\n'); wait_for('保存配置？',mark)
-            send('y\n')
+            mark=send('\n'); wait_for('确认保存以上配置？',mark)
+            send('\n')
         finish()
         if scenario == 'stage-interrupt':
             assert code == 130, (code,text())

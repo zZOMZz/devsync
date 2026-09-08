@@ -99,13 +99,14 @@ export class TerminalUI {
       process.stdout.write("请输入列表中的序号。\n");
     }
   }
-  async confirm(message, { yes = false, details, active = "继续，先备份再同步", inactive = "取消" } = {}) {
+  async confirm(message, { yes = false, details, active = "继续，先备份再同步", inactive = "取消", initialValue = false } = {}) {
     if (this.signal?.aborted) throw new SyncError("INTERRUPTED", this.cancelMessage);
     if (yes) return true;
     if (this.json || !process.stdin.isTTY || !process.stdout.isTTY)
       throw new SyncError("CONFIRMATION_REQUIRED", "请先查看 devsync preview，确认后使用 --yes 或在交互终端执行。", details);
-    if (this.rich) return this.prompt(() => prompts.confirm({ message, active, inactive, initialValue: false }));
-    return (await plainQuestion(message + " [y/N] ", false, this.signal)).toLowerCase() === "y";
+    if (this.rich) return this.prompt(() => prompts.confirm({ message, active, inactive, initialValue }));
+    const answer = await plainQuestion(message + (initialValue ? " [Y/n] " : " [y/N] "), false, this.signal);
+    return answer ? answer.toLowerCase() === "y" : initialValue;
   }
   intro(message) { if (!this.json) this.rich ? prompts.intro(message) : process.stdout.write(message + "\n"); }
   outro(message) { if (!this.json) this.rich ? prompts.outro(message) : process.stdout.write(message + "\n"); }

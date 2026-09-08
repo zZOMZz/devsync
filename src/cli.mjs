@@ -99,7 +99,8 @@ export async function main(args = process.argv.slice(2)) {
           });
         }, async scope => {
           ui.scope(scope);
-          return ui.confirm("保存配置？", { details: scope, active: "保存，保持暂停", inactive: "取消" });
+          ui.log("保存后不会开始同步，可稍后执行 devsync sync 或 devsync start。");
+          return ui.confirm("确认保存以上配置？", { details: scope, active: "保存配置", inactive: "暂不保存", initialValue: true });
         });
       } else if (options.action === "preview") result = await service.preview();
       else if (options.action === "status") result = await service.status();
