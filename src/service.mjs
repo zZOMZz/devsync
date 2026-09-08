@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readJson, writeJson, localManifest, changes, isProcessAlive, healthy, validateRemote } from "./core.mjs";
+import { readJson, writeJson, localManifest, changes, isProcessAlive, validateRemote } from "./core.mjs";
 import { loadProject, secureProject, saveConnection, ensureProjectFiles, loadUserConfig } from "./project.mjs";
 import { probeConnection, checkRemotePath } from "./connection.mjs";
 import { ensureTool } from "./install.mjs";
@@ -9,6 +9,7 @@ import { remoteManifest, backupRemote, createRemote } from "./remote.mjs";
 import { withCacheLock } from "./cache.mjs";
 import { stopWorker, startWorker } from "./worker.mjs";
 import { SyncError } from "./errors.mjs";
+import { projectStatus } from "./status.mjs";
 
 // All user interaction is supplied by the caller. Core operations return data;
 // an editor can use this API or the CLI JSON interface without parsing prose.
@@ -100,24 +101,21 @@ export class ProjectSync {
   }
   async status() {
     const config = await readJson(path.join(this.dir, "config.json"), null);
-    const session = await this.storedSession();
     const control = await readJson(path.join(this.dir, "control.json"), {});
     const lastRun = await readJson(path.join(this.dir, "last-run.json"), null);
-    if (!session) return { project: this.root, configured: Boolean(config), state: "not-started", auto: false, lastRun };
-    // status must not resurrect sessions after a reboot or start a daemon.
-    session.env.MUTAGEN_DISABLE_AUTOSTART = "1";
-    let state;
-    try { state = await session.get({ timeout: 10000 }); }
-    catch (error) {
-      return { project: this.root, configured: Boolean(config), state: "unavailable", auto: false, error: error.message, lastRun };
+    let state = null, queryError = null;
+    try {
+      const session = await this.storedSession();
+      if (session) {
+        // Queries never resurrect a daemon or initiate a remote connection.
+        session.env.MUTAGEN_DISABLE_AUTOSTART = "1";
+        state = await session.get({ timeout: 10000 });
+      } else if (control.auto || isProcessAlive(control.pid) || lastRun)
+        queryError = new Error("缺少工具记录，无法读取已有同步状态。");
+    } catch (error) {
+      queryError = error;
     }
-    const auto = Boolean(control.auto && isProcessAlive(control.pid));
-    return {
-      project: this.root, configured: Boolean(config), auto,
-      state: !state ? "not-started" : state.paused ? "paused" : healthy(state) ? "watching" : "attention",
-      error: control.error || state?.lastError || (control.auto && !auto ? "后台管理服务未运行，请重新 devsync start。" : null),
-      session: state, lastRun,
-    };
+    return projectStatus({ root: this.root, configured: Boolean(config), control, session: state, queryError, lastRun });
   }
   async sync({ auto = false, confirm = async () => false } = {}) {
     return this.locked(async () => {

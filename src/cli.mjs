@@ -9,6 +9,7 @@ import { sshAliases, sshDefaults, probeConnection, checkRemotePath } from "./con
 import { runWorker } from "./worker.mjs";
 import { withProgress } from "./progress.mjs";
 import { SyncError, errorResult } from "./errors.mjs";
+import { statusText } from "./status.mjs";
 
 export const help = `devsync — 本地源码同步到 Linux 开发机
 
@@ -138,15 +139,8 @@ export async function main(args = process.argv.slice(2)) {
       else if (["init", "config"].includes(options.action)) process.stdout.write("✓ 配置已保存，自动同步保持暂停。执行 devsync sync 或 devsync start 开始同步。\n");
       else if (options.action === "preview") process.stdout.write(previewText(result) + "\n完整清单：.sync/preview.json；自动同步保持暂停。\n");
       else if (options.action === "stop") process.stdout.write("✓ 当前项目的自动同步已停止。\n");
-      else if (options.action === "status") {
-        const labels = { "not-started": "尚未启动", paused: "已暂停", watching: "文件已对齐", attention: "连接或文件读写需要处理", unavailable: "后台服务不可用" };
-        process.stdout.write(`${root}\n${labels[result.state]}${result.auto ? "，后台自动同步中" : ""}\n`);
-        if (result.error) process.stdout.write(result.error + "\n");
-        if (result.lastRun) process.stdout.write(`上次同步成功：${result.lastRun.at}，${result.lastRun.files} 个文件。\n`);
-        for (const side of ["alpha", "beta"])
-          for (const kind of ["scanProblems", "transitionProblems"])
-            for (const problem of result.session?.[side]?.[kind] || []) process.stdout.write(`${problem.path}：${problem.error}\n`);
-      } else process.stdout.write(`✓ ${result.files} 个文件已对齐，${result.auto ? "后台自动同步已开启" : "本次同步结束"}。\n`);
+      else if (options.action === "status") process.stdout.write(statusText(result));
+      else process.stdout.write(`✓ ${result.files} 个文件已对齐，${result.auto ? "后台自动同步已开启" : "本次同步结束"}。\n`);
     } finally {
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);

@@ -55,6 +55,12 @@ test("real Mutagen applies two project profiles and stopping one leaves the othe
     await startWorker(root, binary);
     fixture.root = root; fixture.target = target;
   }
+  await stopWorker(fixtures[0].root);
+  const unmanaged = await new ProjectSync(fixtures[0].root).status();
+  assert.equal(unmanaged.manager.state, "stopped");
+  assert.equal(unmanaged.sync.active, true);
+  assert.equal(unmanaged.auto, false);
+  assert.ok(unmanaged.issues.some(issue => issue.code === "SESSION_UNMANAGED"));
   await new ProjectSync(fixtures[0].root).stop();
   await fs.writeFile(path.join(fixtures[0].root, "after-pause"), "must remain local");
   await fs.writeFile(path.join(fixtures[1].root, "after-pause"), "other project continues");
@@ -63,4 +69,10 @@ test("real Mutagen applies two project profiles and stopping one leaves the othe
   assert.equal((await sessions[1].get()).paused, false);
   await assert.rejects(fs.access(path.join(fixtures[0].target, "after-pause")), { code: "ENOENT" });
   assert.equal(await fs.readFile(path.join(fixtures[1].target, "after-pause"), "utf8"), "other project continues");
+  await stopWorker(fixtures[1].root);
+  await sessions[1].run(["daemon", "stop"]);
+  const unavailable = await new ProjectSync(fixtures[1].root).status();
+  assert.equal(unavailable.state, "unavailable");
+  assert.equal(unavailable.sync.active, null);
+  await assert.rejects(fs.access(path.join(fixtures[1].root, ".sync/state/daemon/daemon.sock")), { code: "ENOENT" });
 });

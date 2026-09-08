@@ -67,3 +67,38 @@ test("packed npm artifact installs into an isolated prefix and runs outside its 
   assert.equal(result.project, await fs.realpath(project));
   assert.equal(result.ok, true);
 });
+
+test("status CLI reports progress, manager failures and actionable file diagnostics in text and JSON", { skip: process.platform === "win32" }, async t => {
+  const { quote } = await import("../src/core.mjs");
+  const root = await fs.mkdtemp(path.join(process.platform === "darwin" ? "/private/tmp" : os.tmpdir(), "ds-cli-status-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const response = path.join(root, "session.json"), script = path.join(root, "fake.cjs"), tool = path.join(root, "mutagen");
+  await fs.writeFile(script, `if(process.env.MUTAGEN_DISABLE_AUTOSTART !== '1') process.exit(2); process.stdout.write(require('fs').readFileSync(${JSON.stringify(response)},'utf8'));`);
+  await fs.writeFile(tool, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)}\n`, { mode: 0o700 });
+  await writeJson(path.join(root, ".sync/tool.json"), { path: tool });
+  await writeJson(path.join(root, ".sync/config.json"), { remote: {} });
+  await writeJson(path.join(root, ".sync/control.json"), { auto: true, pid: process.pid });
+  const state = { name: "project-sync", paused: false, status: "scanning", alpha: { connected: true }, beta: { connected: true } };
+  await writeJson(response, [state]);
+  const run = args => command(process.execPath, [bin, "status", "--dir", root, ...args]);
+  const progress = await run([]);
+  assert.match(progress, /同步：正在扫描文件/);
+  assert.match(progress, /后台重连管理：运行中/);
+  assert.doesNotMatch(progress, /需要处理|已对齐/);
+  state.status = "watching";
+  state.beta.transitionProblems = [{ path: "src/blocked.txt", error: "Permission denied" }];
+  state.conflicts = [{ root: "src/conflict.txt" }];
+  await writeJson(response, [state]);
+  await writeJson(path.join(root, ".sync/control.json"), { auto: true });
+  const result = JSON.parse(await run(["--json"]));
+  assert.equal(result.ok, true); // successful query does not imply healthy sync
+  assert.equal(result.statusVersion, 1);
+  assert.equal(result.sync.aligned, false);
+  assert.equal(result.manager.state, "missing");
+  assert.ok(result.issues.some(i => i.code === "FILE_WRITE" && i.side === "remote"));
+  const text = await run([]);
+  assert.match(text, /远端 src\/blocked.txt/);
+  assert.match(text, /src\/conflict.txt/);
+  assert.match(text, /devsync stop/);
+  assert.match(text, /devsync sync/);
+});
