@@ -1,9 +1,12 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { command, quote, symlinkSignature, writeJson } from "./core.mjs";
+import { command, quote, symlinkSignature, writeJson, readJson, digest } from "./core.mjs";
 import { defaultRules, protectedPatterns, patternBody } from "./rules.mjs";
 import { sshOptions } from "./ssh-transport.mjs";
+import { backupOwner, backupTarget, ownedBackup } from "./backup.mjs";
+import { SyncError } from "./errors.mjs";
 export async function ssh(root, cfg, auth, script, input, run = command) {
   const r = cfg.remote;
   const args = ["-p", String(r.port), ...sshOptions(root, cfg, auth)];
@@ -87,18 +90,62 @@ export function parseRemoteManifest(result) {
   }
   return { exists: true, files };
 }
-export async function backupRemote(root, cfg, auth, files) {
+function backupInput(files) {
+  if (files.some(file => typeof file !== "string" || !file || file === "." || file.startsWith("/") || /[\0\r\n]/.test(file) || path.posix.normalize(file) !== file || file.split("/").includes("..")))
+    throw new SyncError("INVALID_BACKUP", "备份清单必须使用项目内的相对文件路径。");
+  return Buffer.from(files.map(file => "./" + file + "\0").join(""));
+}
+export async function estimateBackup(root, cfg, auth, files, run = ssh) {
+  if (!files.length) return 0;
+  // Only stat affected entries; do not hash/read their contents a second time.
+  const script = `cd ${quote(cfg.remote.path)} && xargs -0 -r sh -c ${quote('find "$@" -maxdepth 0 -printf "%s\\n"')} sh`;
+  const result = await run(root, cfg, auth, script, backupInput(files));
+  const sizes = result.trim().split(/\r?\n/);
+  if (sizes.length !== files.length || sizes.some(size => !/^\d+$/.test(size))) throw Error("无法读取备份文件大小。");
+  const bytes = sizes.reduce((total, size) => total + Number(size), 0);
+  if (!Number.isSafeInteger(bytes)) throw Error("备份大小超出可估算范围。");
+  return bytes;
+}
+async function backupLedger(root) {
+  const ledger = await readJson(path.join(root, ".sync/backups.json"), { version: 1, entries: [] });
+  if (ledger?.version !== 1 || !Array.isArray(ledger.entries)) throw new SyncError("INVALID_BACKUP", "备份记录格式无效，请检查 .sync/backups.json。");
+  return ledger;
+}
+export async function backupRemote(root, cfg, auth, files, run = ssh) {
   if (!files.length) return null;
+  const input = backupInput(files);
+  const ledger = await backupLedger(root);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backup = `${cfg.remote.path}.sync-backup-${stamp}.tar.gz`;
-  await ssh(
+  const backup = `${backupTarget(cfg).path}.sync-backup-${backupOwner(root)}-${stamp}-${randomUUID()}.tar.gz`;
+  const temporary = backup + ".partial";
+  await run(
     root,
     cfg,
     auth,
-    `umask 077; cd ${quote(cfg.remote.path)} && tar -czf ${quote(backup)} --null -T - && tar -tzf ${quote(backup)} >/dev/null`,
-    Buffer.from(files.map((p) => "./" + p + "\0").join("")),
+    `set -e; umask 077; trap ${quote(`rm -f -- ${quote(temporary)}`)} 0; cd ${quote(cfg.remote.path)}; tar -czf ${quote(temporary)} --no-recursion --null -T -; tar -tzf ${quote(temporary)} >/dev/null; mv -- ${quote(temporary)} ${quote(backup)}`,
+    input,
   );
+  ledger.entries.push({ target: digest(JSON.stringify(backupTarget(cfg))), path: backup });
+  await writeJson(path.join(root, ".sync/backups.json"), ledger);
   return backup;
+}
+export async function pruneBackups(root, cfg, auth, keep, run = ssh) {
+  if (!Number.isInteger(keep) || keep < 1 || keep > 100) throw new SyncError("INVALID_BACKUP", "无效的备份保留数量。");
+  const ledger = await backupLedger(root);
+  const target = digest(JSON.stringify(backupTarget(cfg)));
+  const entries = ledger.entries.filter(entry => entry?.target === target && ownedBackup(root, cfg, entry.path));
+  const paths = [...new Set(entries.map(entry => entry.path))];
+  const removed = paths.slice(0, Math.max(0, paths.length - keep));
+  if (!removed.length) return { removed: 0 };
+  const retained = paths.slice(-keep);
+  // Never discover deletion candidates with a wildcard. Require the retained
+  // files to exist, and reject symlink/directory substitutions before deleting.
+  const guard = retained.map(file => `test -f ${quote(file)} && test ! -L ${quote(file)}`).join(" && ");
+  const oldGuard = removed.map(file => `test ! -L ${quote(file)} && { test ! -e ${quote(file)} || test -f ${quote(file)}; }`).join(" && ");
+  await run(root, cfg, auth, `set -e; ${guard} || { echo '保留的备份缺失或不是普通文件，已停止清理。' >&2; exit 1; }; ${oldGuard} || { echo '旧备份包含符号链接或非普通文件，已停止清理。' >&2; exit 1; }; rm -f -- ${removed.map(quote).join(" ")}`);
+  ledger.entries = ledger.entries.filter(entry => entry?.target !== target || !removed.includes(entry?.path));
+  await writeJson(path.join(root, ".sync/backups.json"), ledger);
+  return { removed: removed.length };
 }
 export async function createRemote(root, cfg, auth) {
   await ssh(

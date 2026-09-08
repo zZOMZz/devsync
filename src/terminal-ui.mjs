@@ -4,12 +4,14 @@ import { Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withProgress } from "./progress.mjs";
 import { SyncError } from "./errors.mjs";
+import { backupPolicy } from "./backup.mjs";
 
 export function scopeLines(scope) {
   const remote = scope.remote;
   const lines = [`本地  ${scope.local}`, `远端  ${remote.username}@${remote.host}:${remote.port}:${remote.path}`];
   if (scope.authentication) lines.push(`认证  ${{ password: "密码", "identity-file": "指定私钥", "ssh-config": "SSH config / agent" }[scope.authentication]}`);
   if (scope.identityFile) lines.push(`私钥  ${scope.identityFile}`);
+  if (scope.backup) lines.push(scope.backup.mode === "off" ? "备份  已关闭" : `备份  自动，保留最近 ${scope.backup.keep} 份`);
   lines.push(scope.envFiles.length ? `允许的环境文件  ${scope.envFiles.join("、")}` : ".env* 环境文件不参与同步");
   lines.push("本地删除会同步到远端；远端独有的未排除文件会删除，远端修改会被本地覆盖。");
   return lines;
@@ -108,6 +110,35 @@ export class TerminalUI {
     const answer = await plainQuestion(message + (initialValue ? " [Y/n] " : " [y/N] "), false, this.signal);
     return answer ? answer.toLowerCase() === "y" : initialValue;
   }
+  async backupSettings(previous) {
+    let policy;
+    try { policy = backupPolicy(previous); }
+    catch { policy = backupPolicy(); this.log("当前备份配置无效，请重新选择。", "warn"); }
+    const choice = await this.select({ message: "备份策略", initialValue: policy.mode, options: [
+      { value: "auto", label: `自动备份，保留最近 ${policy.keep} 份`, hint: "首次接入或扩大同步范围时" },
+      { value: "off", label: "关闭备份", hint: "适合可随时重建的远端目录" },
+      { value: "custom", label: "自动备份，自定义保留数量" },
+    ] });
+    if (choice !== "custom") return { ...policy, mode: choice };
+    const validate = input => { try { backupPolicy({ keep: Number(input) }); } catch (error) { return error.message; } };
+    while (true) {
+      const answer = await this.ask(`保留数量 [${policy.keep}]：`, false, { message: "保留最近多少份备份？", initialValue: String(policy.keep), validate });
+      const keep = Number(answer || policy.keep);
+      const error = validate(String(keep));
+      if (error) { this.log(error, "warn"); continue; }
+      return { mode: "auto", keep };
+    }
+  }
+  async confirmSync(plan, { yes = false } = {}) {
+    if (!plan.backup?.enabled || yes || this.json || !process.stdin.isTTY || !process.stdout.isTTY)
+      return this.confirm("以本地为准同步，是否继续？", { yes, details: plan, active: plan.backup?.enabled ? "备份后同步" : "直接同步" });
+    const value = await this.select({ message: "选择同步方式", initialValue: "cancel", options: [
+      { value: "backup", label: "备份后同步" },
+      { value: "skip", label: "跳过本次备份，直接同步", hint: "仍会覆盖和删除远端文件" },
+      { value: "cancel", label: "取消" },
+    ] });
+    return { confirmed: value !== "cancel", skipBackup: value === "skip" };
+  }
   intro(message) { if (!this.json) this.rich ? prompts.intro(message) : process.stdout.write(message + "\n"); }
   outro(message) { if (!this.json) this.rich ? prompts.outro(message) : process.stdout.write(message + "\n"); }
   log(message, kind = "info") {
@@ -131,7 +162,14 @@ export class TerminalUI {
       if (files.length > 15) lines.push(`  另有 ${files.length - 15} 项，完整清单见 .sync/preview.json`);
       this.log(lines.join("\n"), key === "deleted" && files.length ? "warn" : "step");
     }
-    this.log("确认后先备份将被覆盖或删除的远端文件，再开始同步。");
+    if (plan.backup?.enabled) {
+      const bytes = plan.backup.estimatedBytes;
+      const size = bytes == null ? "未知" : bytes < 1024 ? `${bytes} B` : bytes < 1024 ** 2 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+      this.log(`本次备份 ${plan.backup.fileCount} 个文件，${bytes == null ? "大小暂无法估算" : `原始大小约 ${size}（压缩后大小会变化）`}。同步成功后保留最近 ${plan.backup.keep} 份。`);
+    } else if (plan.backup) {
+      const reasons = { disabled: "项目已关闭备份", "scope-unchanged": "同步范围未扩大", "no-affected-files": "没有会被覆盖或删除的文件" };
+      this.log(`本次不备份：${reasons[plan.backup.reason] || "无需备份"}。`);
+    } else this.log("确认后先备份将被覆盖或删除的远端文件，再开始同步。");
   }
   async stage(label, task) {
     if (this.json) return task({ consume() {} });

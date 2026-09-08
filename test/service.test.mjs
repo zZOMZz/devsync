@@ -21,6 +21,7 @@ async function fixture(t) {
   const dependencies = {
     ensureTool: async () => { calls.push("tool"); return "/mock/mutagen"; },
     remoteManifest: async () => ({ exists: true, files: { "main.py": "old", "obsolete.py": "old" } }),
+    estimateBackup: async () => 128,
     backupRemote: async (_root, _config, _auth, files) => { calls.push(["backup", files]); return "/backup.tar.gz"; },
     createRemote: async () => { calls.push("mkdir"); },
     probeConnection: async () => ({ home: "/home/alice" }),
@@ -211,4 +212,107 @@ test("a later failed check invalidates an earlier successful validation receipt"
     return { cfg, auth };
   }, async () => true);
   assert.equal(probes, 3);
+});
+
+test("backup policies and one-time skipping avoid remote backup work without changing project policy", async t => {
+  for (const mode of ["off", "skip"]) {
+    const f = await fixture(t);
+    if (mode === "off") f.config.backup = { mode: "off", keep: 3 };
+    await writeJson(path.join(f.root, ".sync/config.json"), f.config);
+    let estimates = 0;
+    f.dependencies.estimateBackup = async () => { estimates++; return 128; };
+    const result = await new ProjectSync(f.root, { dependencies: f.dependencies }).sync({ confirm: async preview => {
+      assert.equal(preview.backup.enabled, mode === "skip");
+      return mode === "skip" ? { confirmed: true, skipBackup: true } : true;
+    } });
+    assert.equal(result.synced, true);
+    assert.equal(estimates, mode === "off" ? 0 : 1);
+    assert.ok(!f.calls.some(call => Array.isArray(call) && call[0] === "backup"));
+    assert.deepEqual(await readJson(path.join(f.root, ".sync/config.json")), f.config);
+    const accepted = await readJson(path.join(f.root, ".sync/accepted.json"));
+    assert.equal(accepted.backup, null);
+    assert.equal(accepted.backupDecision, mode === "skip" ? "skipped-once" : "disabled");
+  }
+});
+
+test("auth and polling changes do not back up again; scope expansion backs up newly included files", { skip: process.platform === "win32" }, async t => {
+  for (const change of ["identity", "polling", "expanded", "target"]) {
+    const f = await fixture(t);
+    await f.service.sync({ confirm: async () => true });
+    if (change === "identity") f.config.identityFile = "/different/key";
+    if (change === "target") f.config.remote.path = "/srv/new-project";
+    await writeJson(path.join(f.root, ".sync/config.json"), f.config);
+    if (change === "polling") await writeJson(path.join(f.root, "sync.config.json"), { pollingInterval: 5 });
+    if (change === "expanded") {
+      await writeJson(path.join(f.root, "sync.config.json"), { exclude: [] });
+      f.dependencies.remoteManifest = async () => ({ exists: true, files: { "main.py": "old", "dist/remote.js": "old" } });
+    }
+    let estimates = 0;
+    f.dependencies.estimateBackup = async () => { estimates++; return 128; };
+    f.calls.length = 0;
+    await new ProjectSync(f.root, { dependencies: f.dependencies }).sync({ confirm: async preview => {
+      assert.equal(preview.backup.enabled, ["expanded", "target"].includes(change));
+      return true;
+    } });
+    const backups = f.calls.filter(call => Array.isArray(call) && call[0] === "backup");
+    assert.equal(backups.length, ["expanded", "target"].includes(change) ? 1 : 0);
+    assert.equal(estimates, backups.length);
+    if (change === "expanded") assert.deepEqual(backups[0][1], ["dist/remote.js"]);
+  }
+});
+
+test("unknown size does not disable backup and cleanup failures are retryable after a successful sync", async t => {
+  const f = await fixture(t);
+  f.dependencies.estimateBackup = async () => { throw Error("stat failed"); };
+  let cleanups = 0;
+  f.dependencies.pruneBackups = async () => { if (++cleanups === 1) throw Error("cleanup unavailable"); return {}; };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  const result = await service.sync({ confirm: async preview => {
+    assert.equal(preview.backup.enabled, true);
+    assert.equal(preview.backup.estimatedBytes, null);
+    assert.equal(preview.backup.estimateUnavailable, true);
+    return true;
+  } });
+  assert.equal(result.synced, true);
+  assert.match(result.warnings[0], /清理失败/);
+  assert.equal((await readJson(path.join(f.root, ".sync/accepted.json"))).backupPendingCleanup, true);
+  await service.sync({ confirm: async () => assert.fail("accepted session") });
+  assert.equal(cleanups, 2);
+  assert.equal((await readJson(path.join(f.root, ".sync/accepted.json"))).backupPendingCleanup, false);
+});
+
+test("failed synchronization retains backups and defers cleanup until successful retry", async t => {
+  const f = await fixture(t);
+  let flushes = 0, cleanups = 0;
+  f.dependencies.Session = class extends f.dependencies.Session {
+    async flush() { if (++flushes === 1) throw Error("write failed"); return super.flush(); }
+  };
+  f.dependencies.pruneBackups = async () => { cleanups++; };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  await assert.rejects(service.sync({ confirm: async () => true }), /write failed/);
+  assert.equal(cleanups, 0);
+  await service.sync({ confirm: async () => assert.fail("already accepted") });
+  assert.equal(cleanups, 1);
+});
+
+test("invalid backup settings fail before connecting and non-confirming objects do not authorize sync", async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.service.sync({ confirm: async () => ({ skipBackup: true }) }), { code: "CANCELLED" });
+  assert.ok(!f.calls.includes("resume"));
+  f.config.backup = { mode: "off", keep: 0 };
+  await writeJson(path.join(f.root, ".sync/config.json"), f.config);
+  f.dependencies.probeConnection = async () => assert.fail("invalid config must not connect");
+  await assert.rejects(new ProjectSync(f.root, { dependencies: f.dependencies }).sync(), { code: "INVALID_BACKUP" });
+});
+
+test("lowering retention applies after the next successful sync without creating another backup", async t => {
+  const f = await fixture(t), keeps = [];
+  f.dependencies.pruneBackups = async (_root, _cfg, _auth, keep) => { keeps.push(keep); };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  await service.sync({ confirm: async () => true });
+  f.config.backup = { mode: "auto", keep: 1 };
+  await writeJson(path.join(f.root, ".sync/config.json"), f.config);
+  await service.sync({ confirm: async () => assert.fail("retention is not a transfer change") });
+  assert.deepEqual(keeps, [3, 1]);
+  assert.equal(f.calls.filter(call => Array.isArray(call) && call[0] === "backup").length, 1);
 });

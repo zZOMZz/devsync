@@ -84,19 +84,21 @@ export async function main(args = process.argv.slice(2)) {
         ui.intro(`devsync · ${{ init: "配置项目", config: "修改配置", preview: "差异预览", sync: "单次同步", start: "后台同步" }[options.action]}`);
       const service = new ProjectSync(root, {
         signal: options.signal,
-        onEvent: event => ui.log(event.type === "backup" ? `备份已保存：${event.path}` : event.message, "step"),
+        onEvent: event => ui.log(event.type === "backup" ? `备份已保存：${event.path}` : event.message, event.type === "warning" ? "warn" : "step"),
         stage: (label, task) => ui.stage(label, task),
       });
       let result;
       if (["init", "config"].includes(options.action)) {
         result = await service.configure(async (project, auth, checks) => {
           ui.log(ui.rich ? "方向键选择，回车确认；已有内容可直接编辑。配置完成后同步保持暂停。" : "输入序号选择，回车沿用默认值。配置完成后同步保持暂停。");
-          return configureConnection((message, secret, metadata) => ui.ask(message, secret, metadata), project.config, auth, {
+          const answers = await configureConnection((message, secret, metadata) => ui.ask(message, secret, metadata), project.config, auth, {
             root, aliases: await sshAliases(), resolve: sshDefaults,
             select: options => ui.select(options),
             probe: checks.probe, checkPath: checks.checkPath,
             log: message => ui.log(message, "warn"),
           });
+          answers.cfg.backup = await ui.backupSettings(answers.cfg.backup);
+          return answers;
         }, async scope => {
           ui.scope(scope);
           ui.log("保存后不会开始同步，可稍后执行 devsync sync 或 devsync start。");
@@ -107,7 +109,7 @@ export async function main(args = process.argv.slice(2)) {
       else if (options.action === "stop") result = await service.stop();
       else result = await service.sync({ auto: options.action === "start", confirm: async preview => {
         ui.preview(preview);
-        return ui.confirm("以本地为准同步，是否继续？", { yes: options.yes, details: preview });
+        return ui.confirmSync(preview, { yes: options.yes });
       } });
       if (interrupted) throw new SyncError("INTERRUPTED", "操作已中断。");
       if (options.json) process.stdout.write(JSON.stringify({ ok: true, ...result }) + "\n");

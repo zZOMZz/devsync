@@ -9,7 +9,7 @@ const python = process.env.DEVSYNC_TEST_PYTHON || "python3";
 const hasPty = process.platform !== "win32" && spawnSync(python, ["--version"], { stdio: "ignore" }).status === 0;
 const driver = fileURLToPath(new URL("./fixtures/tui-driver.py", import.meta.url));
 const cli = fileURLToPath(new URL("../bin/devsync.mjs", import.meta.url));
-for (const scenario of ["success", "escape", "ctrl-c", "sigterm", "plain", "stage-interrupt", "preview"])
+for (const scenario of ["success", "escape", "ctrl-c", "sigterm", "plain", "stage-interrupt", "preview", "confirm-skip", "confirm-cancel"])
   test(`PTY ${scenario}: keyboard flow restores terminal and releases the project lock`, { skip: !hasPty, timeout: 25000 }, async () => {
     const result = JSON.parse(await command(python, [driver, process.execPath, cli, scenario], { timeout: 20000 }));
     assert.equal(result.checks, "passed");
@@ -38,4 +38,15 @@ test("narrow summary wrapping retains CJK paths and authentication summary conta
     envFiles: [], authentication: "password", password: "never-display" }).join("\n");
   assert.match(text, /认证  密码/);
   assert.doesNotMatch(text, /never-display/);
+});
+
+test("backup settings support project opt-out and validated custom retention", async () => {
+  const ui = new TerminalUI();
+  ui.select = async () => "off";
+  assert.deepEqual(await ui.backupSettings(), { mode: "off", keep: 3 });
+  ui.select = async () => "custom";
+  const answers = ["0", "2"];
+  ui.ask = async () => answers.shift();
+  ui.log = () => {};
+  assert.deepEqual(await ui.backupSettings(), { mode: "auto", keep: 2 });
 });

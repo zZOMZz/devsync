@@ -18,6 +18,7 @@ if(args.includes('-G')) { console.log('user alice\\nport 2202\\nhostname devbox'
 else { fs.appendFileSync(process.env.TUI_CALLS, args.at(-1).includes('SYNC_HOME')?'probe\\n':'path\\n');
 if(process.env.TUI_SLOW) setTimeout(()=>console.log('SYNC_HOME=/srv/alice'),30000);
 else if(args.at(-1).includes('SYNC_LINKS')) process.stdout.write('0'.repeat(64)+'  ./old.txt\\n'+'0'.repeat(64)+'  ./deleted.txt\\n'+String.fromCharCode(0)+'SYNC_LINKS'+String.fromCharCode(0));
+else if(args.at(-1).includes('xargs -0')) console.log('16\\n32');
 else console.log(args.at(-1).includes('SYNC_HOME')?'SYNC_HOME=/srv/alice':'SYNC_PATH_OK'); }
 ''')
 import shlex
@@ -31,6 +32,10 @@ if scenario == 'preview':
     (root / 'old.txt').write_text('updated')
 pid, master = pty.fork()
 if pid == 0:
+    if scenario.startswith('confirm-'):
+        module = (pathlib.Path(cli).resolve().parent.parent / 'src/terminal-ui.mjs').as_uri()
+        script = 'import { TerminalUI } from '+json.dumps(module)+'; const result = await new TerminalUI().confirmSync({backup:{enabled:true}}); console.log("RESULT "+JSON.stringify(result));'
+        os.execvpe(node, [node, '--input-type=module', '-e', script], env)
     os.execvpe(node, [node, cli, 'preview' if scenario == 'preview' else 'config', '--dir', str(root)], env)
 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 44, 0, 0))
 raw = b''
@@ -62,14 +67,21 @@ def finish():
     assert code is not None, text()[-3000:]
     for _ in range(3): pump(0.03)
 try:
-    if scenario == 'preview':
+    if scenario.startswith('confirm-'):
+        wait_for('选择同步方式')
+        send('\x1b[A\r' if scenario == 'confirm-skip' else '\r')
         finish()
         assert code == 0, text()
-        for value in ['新增 1 个文件', '覆盖 1 个文件', '删除 1 个文件', 'new.txt', 'old.txt', 'deleted.txt']:
+        result = json.loads(text().split('RESULT ')[-1].strip())
+        assert result == {'confirmed': scenario == 'confirm-skip', 'skipBackup': scenario == 'confirm-skip'}, result
+    elif scenario == 'preview':
+        finish()
+        assert code == 0, text()
+        for value in ['新增 1 个文件', '覆盖 1 个文件', '删除 1 个文件', 'new.txt', 'old.txt', 'deleted.txt', '本次备份 2 个文件', '48 B']:
             assert value in text(), text()
         assert (root / '.sync/preview.json').exists()
     else: wait_for('选择开发机')
-    if scenario == 'preview': pass
+    if scenario == 'preview' or scenario.startswith('confirm-'): pass
     elif scenario in ['escape', 'ctrl-c', 'sigterm']:
         if scenario == 'sigterm': os.kill(pid, signal.SIGTERM)
         else: send('\x1b' if scenario == 'escape' else '\x03')
@@ -88,7 +100,8 @@ try:
         if scenario == 'success':
             mark=send('\x1b[B\x1b[B\r'); wait_for('开发机密码',mark)
             mark=send('not-visible-秘密\r'); wait_for('远端项目绝对路径',mark)
-            mark=send('\x15/srv/alice/中文项目\r'); wait_for('确认保存以上配置？',mark)
+            mark=send('\x15/srv/alice/中文项目\r'); wait_for('备份策略',mark)
+            mark=send('\r'); wait_for('确认保存以上配置？',mark)
             send('\r')
         elif scenario == 'stage-interrupt':
             mark=send('\r'); wait_for('验证 SSH 连接和认证',mark)
@@ -98,6 +111,7 @@ try:
             send('\x03')
         else:
             mark=send('1\n'); wait_for('远端项目绝对路径',mark)
+            mark=send('\n'); wait_for('备份策略',mark)
             mark=send('\n'); wait_for('确认保存以上配置？',mark)
             send('\n')
         finish()

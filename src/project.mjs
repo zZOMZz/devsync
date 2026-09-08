@@ -4,6 +4,7 @@ import os from "node:os";
 import { readJson, writeJson, command, validateRemote } from "./core.mjs";
 import { normalizeRules, defaultRules } from "./rules.mjs";
 import { SyncError } from "./errors.mjs";
+import { backupPolicy } from "./backup.mjs";
 
 export async function resolveProject(directory = process.cwd()) {
   const root = await fs.realpath(path.resolve(directory));
@@ -28,7 +29,7 @@ export async function loadProject(root, { validateConfig = true } = {}) {
   const dir = path.join(root, ".sync");
   const rules = normalizeRules(await readJson(path.join(root, "sync.config.json"), defaultRules));
   const config = await readJson(path.join(dir, "config.json"), null);
-  if (config && validateConfig) validateRemote(config.remote);
+  if (config && validateConfig) { validateRemote(config.remote); backupPolicy(config.backup); }
   return { root, dir, rules, config };
 }
 export async function secureProject(root) {

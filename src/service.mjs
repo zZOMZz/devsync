@@ -5,11 +5,12 @@ import { loadProject, secureProject, saveConnection, ensureProjectFiles, loadUse
 import { probeConnection, checkRemotePath } from "./connection.mjs";
 import { ensureTool } from "./install.mjs";
 import { Session, fingerprint } from "./session.mjs";
-import { remoteManifest, backupRemote, createRemote } from "./remote.mjs";
+import { remoteManifest, backupRemote, createRemote, estimateBackup, pruneBackups } from "./remote.mjs";
 import { withCacheLock } from "./cache.mjs";
 import { stopWorker, startWorker } from "./worker.mjs";
 import { SyncError } from "./errors.mjs";
 import { projectStatus } from "./status.mjs";
+import { backupPolicy, backupScope, planBackup } from "./backup.mjs";
 
 // All user interaction is supplied by the caller. Core operations return data;
 // an editor can use this API or the CLI JSON interface without parsing prose.
@@ -20,7 +21,7 @@ export class ProjectSync {
     this.dir = path.join(root, ".sync");
     this.emit = onEvent;
     this.stage = stage;
-    this.deps = { ensureTool, remoteManifest, backupRemote, createRemote,
+    this.deps = { ensureTool, remoteManifest, backupRemote, createRemote, estimateBackup, pruneBackups,
       probeConnection, checkRemotePath, Session, startWorker, stopWorker, ...dependencies };
   }
   checkCancelled() {
@@ -59,9 +60,10 @@ export class ProjectSync {
       // Validation receipts live only in this invocation. A UI cannot mark
       // arbitrary answers as checked; changed answers are validated again.
       const probes = new Set(), paths = new Set();
-      const key = (cfg, auth, includePath) => digest(JSON.stringify({
-        ...cfg, remote: { ...cfg.remote, ...(!includePath ? { path: undefined } : {}) }, auth,
-      }));
+      const key = (cfg, auth, includePath) => {
+        const { backup: _backup, ...connection } = cfg;
+        return digest(JSON.stringify({ ...connection, remote: { ...cfg.remote, ...(!includePath ? { path: undefined } : {}) }, auth }));
+      };
       const checks = {
         probe: async (cfg, auth) => {
           for (const field of ["host", "username", "port"]) validateRemoteField(field, cfg.remote?.[field]);
@@ -82,6 +84,7 @@ export class ProjectSync {
       };
       const answers = await collect(project, previousAuth, checks);
       validateRemote(answers.cfg.remote);
+      backupPolicy(answers.cfg.backup);
       if (!probes.has(key(answers.cfg, answers.auth, false))) await checks.probe(answers.cfg, answers.auth);
       if (!paths.has(key(answers.cfg, answers.auth, true))) await checks.checkPath(answers.cfg, answers.auth);
       const scope = this.scope(answers.cfg, project.rules, answers.auth);
@@ -94,6 +97,7 @@ export class ProjectSync {
   }
   scope(config, rules, auth) {
     return { local: this.root, remote: config.remote, mode: rules.mode,
+      backup: backupPolicy(config.backup),
       ...(auth ? { authentication: auth.password ? "password" : config.identityFile ? "identity-file" : "ssh-config",
         ...(config.identityFile ? { identityFile: config.identityFile } : {}) } : {}),
       deletesRemote: true, envFiles: rules.envFiles, exclude: rules.exclude };
@@ -107,14 +111,24 @@ export class ProjectSync {
     await this.phase("验证 SSH 连接和认证", () => this.deps.probeConnection(this.root, project.config, auth));
     await this.phase("验证远端目录", () => this.deps.checkRemotePath(this.root, project.config, auth));
   }
-  async plan(project, auth) {
+  async plan(project, auth, accepted) {
     const { remote, local } = await this.phase("检查本地与远端差异", async () => ({
       remote: await this.deps.remoteManifest(this.root, project.config, auth, project.rules),
       local: await localManifest(this.root, project.rules),
     }));
     const diff = changes(local, remote.files);
+    accepted ??= await readJson(path.join(this.dir, "accepted.json"), {});
+    // An unchanged legacy session has already been accepted. Migrate its scope
+    // without treating a routine preview as another first contact.
+    if (!accepted.backupScope && accepted.fingerprint === fingerprint(this.root, project.config, project.rules, auth))
+      accepted = { ...accepted, backupScope: backupScope(this.root, project.config, project.rules) };
+    const backup = planBackup(this.root, project.config, project.rules, diff, accepted);
+    if (backup.enabled) {
+      try { backup.estimatedBytes = await this.deps.estimateBackup(this.root, project.config, auth, backup.files); }
+      catch { backup.estimateUnavailable = true; }
+    }
     const result = { scope: this.scope(project.config, project.rules, auth), remoteExists: remote.exists,
-      added: diff.added, updated: diff.updated, deleted: diff.deleted };
+      added: diff.added, updated: diff.updated, deleted: diff.deleted, backup };
     await writeJson(path.join(this.dir, "preview.json"), result);
     return result;
   }
@@ -153,13 +167,15 @@ export class ProjectSync {
   async sync({ auto = false, confirm = async () => false } = {}) {
     return this.locked(async () => {
       let session, keepAuto = false;
+      const warnings = [];
       try {
         const project = await this.requiredProject();
+        const policy = backupPolicy(project.config.backup);
         const auth = await this.auth();
         const current = await readJson(path.join(this.dir, "control.json"), {});
         keepAuto = Boolean(current.auto && isProcessAlive(current.pid));
         const id = fingerprint(this.root, project.config, project.rules, auth);
-        const accepted = await readJson(path.join(this.dir, "accepted.json"), {});
+        let accepted = await readJson(path.join(this.dir, "accepted.json"), {});
         // Pause before validating a changed target or rules so the old session
         // cannot continue propagating changes while a new decision is pending.
         if (accepted.fingerprint !== id || !keepAuto) {
@@ -185,14 +201,23 @@ export class ProjectSync {
           keepAuto = false;
           await this.deps.stopWorker(this.root);
           if (previous) await session.pause();
-          const preview = await this.plan(project, auth);
-          if (!(await confirm(preview))) throw new SyncError("CANCELLED", "已取消，自动同步保持暂停。");
+          const preview = await this.plan(project, auth, accepted);
+          const decision = await confirm(preview);
+          if (decision !== true && decision?.confirmed !== true) throw new SyncError("CANCELLED", "已取消，自动同步保持暂停。");
           this.checkCancelled();
-          const backup = await this.phase("备份受影响的远端文件", () => this.deps.backupRemote(this.root, project.config, auth, [...preview.updated, ...preview.deleted]));
+          const skipBackup = decision?.skipBackup === true;
+          const backup = preview.backup.enabled && !skipBackup
+            ? await this.phase("备份受影响的远端文件", () => this.deps.backupRemote(this.root, project.config, auth, preview.backup.files)) : null;
           if (!preview.remoteExists) await this.deps.createRemote(this.root, project.config, auth);
           if (previous) await session.run(["sync", "terminate", session.name]);
           await session.create(project.config, project.rules);
-          await writeJson(path.join(this.dir, "accepted.json"), { fingerprint: id, backup, at: new Date().toISOString() });
+          const nextScope = backupScope(this.root, project.config, project.rules);
+          const sameTarget = accepted.backupScope?.root === this.root && JSON.stringify(accepted.backupScope.remote) === JSON.stringify(nextScope.remote);
+          accepted = { fingerprint: id, backup, backupScope: nextScope,
+            backupRetentionKeep: sameTarget ? accepted.backupRetentionKeep : policy.keep,
+            backupPendingCleanup: Boolean(backup || (sameTarget && accepted.backupPendingCleanup)),
+            backupDecision: skipBackup ? "skipped-once" : preview.backup.reason, at: new Date().toISOString() };
+          await writeJson(path.join(this.dir, "accepted.json"), accepted);
           if (backup) this.emit({ type: "backup", path: backup });
         }
         this.checkCancelled();
@@ -200,12 +225,26 @@ export class ProjectSync {
         const status = await this.phase("同步文件", () => session.flush());
         const lastRun = { at: new Date().toISOString(), files: status.alpha.files };
         await writeJson(path.join(this.dir, "last-run.json"), lastRun);
+        if (!accepted.backupScope && accepted.fingerprint === id) {
+          accepted = { ...accepted, backupScope: backupScope(this.root, project.config, project.rules), backupRetentionKeep: policy.keep };
+          await writeJson(path.join(this.dir, "accepted.json"), accepted);
+        }
+        if (policy.mode === "auto" && (accepted.backupPendingCleanup || accepted.backupRetentionKeep !== policy.keep)) {
+          try {
+            await this.phase("清理旧备份", () => this.deps.pruneBackups(this.root, project.config, auth, policy.keep));
+            await writeJson(path.join(this.dir, "accepted.json"), { ...accepted, backupPendingCleanup: false, backupRetentionKeep: policy.keep });
+          } catch (error) {
+            const message = `同步已完成，但旧备份清理失败：${error.message}`;
+            warnings.push(message);
+            this.emit({ type: "warning", message });
+          }
+        }
         if (auto || keepAuto) {
           this.checkCancelled();
           await this.deps.startWorker(this.root, binary);
           keepAuto = true;
         }
-        return { synced: true, ...lastRun, auto: keepAuto };
+        return { synced: true, ...lastRun, auto: keepAuto, ...(warnings.length ? { warnings } : {}) };
       } finally {
         if (session && !keepAuto) await session.pause();
       }
