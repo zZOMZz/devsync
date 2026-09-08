@@ -18,10 +18,16 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/cache.test.mjs test/cli.test.mjs test/configure.test.mjs test/core.test.mjs test/engine.test.mjs test/rules.test.mjs test/service.test.mjs test/ssh.test.mjs test/ssh-engine.test.mjs test/status.test.mjs",
+    "test": "node --test test/cache.test.mjs test/cli.test.mjs test/configure.test.mjs test/core.test.mjs test/engine.test.mjs test/rules.test.mjs test/service.test.mjs test/ssh.test.mjs test/ssh-engine.test.mjs test/status.test.mjs test/tui.test.mjs",
     "test:engine": "node --test test/engine.test.mjs"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "dependencies": {
+    "@clack/prompts": "0.11.0"
+  },
+  "bundleDependencies": [
+    "@clack/prompts"
+  ]
 }

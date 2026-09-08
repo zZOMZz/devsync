@@ -31,10 +31,13 @@ const size = (bytes) =>
 export class Progress {
   constructor(
     label,
-    { stream = process.stderr, now = Date.now, tickMs = 100 } = {},
+    { stream = process.stderr, now = Date.now, tickMs = 100, interactive = Boolean(stream.isTTY) && process.env.TERM !== "dumb", successSymbol = "✓", failureSymbol = "✗" } = {},
   ) {
     this.label = label;
     this.stream = stream;
+    this.interactive = interactive;
+    this.successSymbol = successSymbol;
+    this.failureSymbol = failureSymbol;
     this.now = now;
     this.started = this.lastChange = now();
     this.lastPrint = -Infinity;
@@ -75,9 +78,9 @@ export class Progress {
   render() {
     if (this.finished) return;
     const now = this.now();
-    if (!this.stream.isTTY && now - this.lastPrint < 5000) return;
-    const text = `${this.stream.isTTY ? frames[this.frame++ % frames.length] : "…"} ${this.text()}`;
-    if (this.stream.isTTY) {
+    if (!this.interactive && now - this.lastPrint < 5000) return;
+    const text = `${this.interactive ? frames[this.frame++ % frames.length] : "…"} ${this.text()}`;
+    if (this.interactive) {
       cursorTo(this.stream, 0);
       clearLine(this.stream, 0);
       // Keep output on one line even in narrow terminal windows.
@@ -101,12 +104,12 @@ export class Progress {
     if (this.finished) return;
     this.finished = true;
     clearInterval(this.timer);
-    if (this.stream.isTTY) {
+    if (this.interactive) {
       cursorTo(this.stream, 0);
       clearLine(this.stream, 0);
     }
     this.stream.write(
-      `${success ? "✓" : "✗"} ${this.label}${success ? "完成" : "失败"}（${((this.now() - this.started) / 1000).toFixed(1)} 秒）\n`,
+      `${success ? this.successSymbol : this.failureSymbol} ${this.label}${success ? "完成" : "失败"}（${((this.now() - this.started) / 1000).toFixed(1)} 秒）\n`,
     );
   }
 }

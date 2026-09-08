@@ -158,3 +158,57 @@ test("explicit key authentication mode changes require confirmation before resum
   assert.ok(!f.calls.includes("resume"));
   assert.deepEqual(await readJson(path.join(f.root, ".sync/accepted.json")), previous);
 });
+
+test("configuration reuses service-owned validation but rechecks changed answers", async t => {
+  for (const change of ["none", "path", "password", "unverified"]) {
+    const f = await fixture(t);
+    let probes = 0, paths = 0;
+    f.dependencies.probeConnection = async () => { probes++; return { home: "/home/alice" }; };
+    f.dependencies.checkRemotePath = async () => { paths++; };
+    const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+    await service.configure(async (_project, _auth, checks) => {
+      const cfg = structuredClone(f.config), auth = { password: "fixture" };
+      await assert.rejects(checks.probe({ ...cfg, remote: { ...cfg.remote, port: 0 } }, auth), /端口/);
+      await assert.rejects(checks.checkPath({ ...cfg, remote: { ...cfg.remote, path: "/" } }, auth), /独立项目/);
+      if (change !== "unverified") {
+        const { path: _path, ...remote } = cfg.remote;
+        await checks.probe({ ...cfg, remote }, auth);
+        await checks.checkPath(cfg, auth);
+      }
+      if (change === "path") cfg.remote.path = "/home/alice/another";
+      if (change === "password") auth.password = "changed";
+      return { cfg, auth };
+    }, async () => true);
+    assert.equal(probes, change === "password" ? 2 : 1, change);
+    assert.equal(paths, ["path", "password"].includes(change) ? 2 : 1, change);
+  }
+});
+
+test("failed validation cannot be reused and cancellation keeps original credentials", async t => {
+  const f = await fixture(t);
+  let probes = 0;
+  f.dependencies.probeConnection = async () => { if (++probes === 1) throw Error("network error"); return {}; };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  await assert.rejects(service.configure(async (_project, _auth, checks) => {
+    const cfg = structuredClone(f.config), auth = { password: "draft" };
+    await assert.rejects(checks.probe(cfg, auth), /network error/);
+    await checks.checkPath(cfg, auth);
+    return { cfg, auth };
+  }, async () => false), { code: "CANCELLED" });
+  assert.equal(probes, 2);
+  assert.equal((await readJson(path.join(f.root, ".sync/auth.json"))).password, "fixture-only");
+});
+
+test("a later failed check invalidates an earlier successful validation receipt", async t => {
+  const f = await fixture(t);
+  let probes = 0;
+  f.dependencies.probeConnection = async () => { if (++probes === 2) throw Error("connection lost"); return {}; };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  await service.configure(async (_project, _auth, checks) => {
+    const cfg = structuredClone(f.config), auth = {};
+    await checks.probe(cfg, auth);
+    await assert.rejects(checks.probe(cfg, auth), /connection lost/);
+    return { cfg, auth };
+  }, async () => true);
+  assert.equal(probes, 3);
+});

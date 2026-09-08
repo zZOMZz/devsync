@@ -1,13 +1,11 @@
-import readline from "node:readline/promises";
-import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { readJson, cancelCommands } from "./core.mjs";
 import { resolveProject, userConfigPath } from "./project.mjs";
 import { ProjectSync } from "./service.mjs";
 import { configureConnection } from "./configure.mjs";
-import { sshAliases, sshDefaults, probeConnection, checkRemotePath } from "./connection.mjs";
+import { sshAliases, sshDefaults } from "./connection.mjs";
 import { runWorker } from "./worker.mjs";
-import { withProgress } from "./progress.mjs";
+import { TerminalUI, plainQuestion } from "./terminal-ui.mjs";
 import { SyncError, errorResult } from "./errors.mjs";
 import { statusText } from "./status.mjs";
 
@@ -60,37 +58,9 @@ export function parseArgs(args) {
     throw new SyncError("USAGE", "init/config 需要交互终端；编辑器可调用核心 API 配置连接。");
   return result;
 }
-export async function ask(message, secret = false, signal) {
-  if (!process.stdin.isTTY) throw new SyncError("INTERACTION_REQUIRED", "配置需要交互终端，请执行 devsync init 或 devsync config。");
-  let output = process.stdout;
-  if (secret) {
-    output.write(message);
-    output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
-  }
-  const rl = readline.createInterface({ input: process.stdin, output, terminal: true });
-  try { const answer = await rl.question(secret ? "" : message, { signal }); return secret ? answer : answer.trim(); }
-  finally { rl.close(); if (secret) process.stdout.write("\n"); }
-}
-function scopeText(scope) {
-  const remote = scope.remote;
-  return `本地目录：${scope.local}\n远端目录：${remote.username}@${remote.host}:${remote.port}:${remote.path}\n` +
-    "本地删除会同步到远端；远端独有的未排除文件会删除，远端修改会被本地覆盖。\n" +
-    (scope.envFiles.length ? `允许同步的环境文件：${scope.envFiles.join("、")}` : ".env* 环境文件默认不参与同步。");
-}
-function previewText(plan) {
-  const details = ["updated", "deleted"].flatMap(key => plan[key].slice(0, 15).map(file => `  ${key === "updated" ? "覆盖" : "删除"}：${file}`));
-  return `${scopeText(plan.scope)}\n将新增 ${plan.added.length}、覆盖 ${plan.updated.length}、删除 ${plan.deleted.length} 个文件。\n` +
-    (plan.remoteExists ? "" : "远端目录尚不存在，同步确认后创建。\n") + details.join("\n");
-}
-async function confirm(message, options, details) {
-  if (options.signal?.aborted) throw new SyncError("INTERRUPTED", "操作已中断。");
-  if (options.yes) return true;
-  if (!process.stdin.isTTY || options.json)
-    throw new SyncError("CONFIRMATION_REQUIRED", "请先查看 devsync preview，确认后在同步命令中使用 --yes，或在交互终端执行。", details);
-  return (await ask(message + " [y/N] ", false, options.signal)).toLowerCase() === "y";
-}
+export const ask = plainQuestion;
 export async function main(args = process.argv.slice(2)) {
-  let options;
+  let options, ui;
   try {
     options = parseArgs(args);
     if (options.help || (options.action === "help" && !options.version)) { process.stdout.write(help); return; }
@@ -98,49 +68,53 @@ export async function main(args = process.argv.slice(2)) {
       const pkg = await readJson(fileURLToPath(new URL("../package.json", import.meta.url)));
       process.stdout.write(pkg.version + "\n"); return;
     }
+    if (["init", "config"].includes(options.action) && (!process.stdin.isTTY || !process.stdout.isTTY))
+      throw new SyncError("INTERACTION_REQUIRED", "配置需要交互终端，请执行 devsync init 或 devsync config。");
     const root = await resolveProject(options.dir);
     if (options.action === "_worker") { await runWorker(root, options.binary, options.token); return; }
     let interrupted = false;
     const controller = new AbortController();
     options.signal = controller.signal;
+    ui = new TerminalUI({ json: options.json, signal: options.signal, action: options.action });
     const interrupt = () => { interrupted = true; controller.abort(); cancelCommands(); };
     process.once("SIGINT", interrupt);
     process.once("SIGTERM", interrupt);
     try {
+      if (["init", "config", "preview", "sync", "start"].includes(options.action))
+        ui.intro(`devsync · ${{ init: "配置项目", config: "修改配置", preview: "差异预览", sync: "单次同步", start: "后台同步" }[options.action]}`);
       const service = new ProjectSync(root, {
         signal: options.signal,
-        onEvent: event => {
-          if (!options.json) process.stderr.write((event.type === "backup" ? `✓ 备份已保存：${event.path}` : event.message) + "\n");
-        },
-        stage: options.json ? async (_label, task) => task({ consume() {} }) : withProgress,
+        onEvent: event => ui.log(event.type === "backup" ? `备份已保存：${event.path}` : event.message, "step"),
+        stage: (label, task) => ui.stage(label, task),
       });
       let result;
       if (["init", "config"].includes(options.action)) {
-        result = await service.configure(async (project, auth) => {
-          process.stdout.write("配置引导：回车沿用已有值；连接、认证和目录将依次验证。\n");
-          return configureConnection((message, secret) => ask(message, secret, options.signal), project.config, auth, {
+        result = await service.configure(async (project, auth, checks) => {
+          ui.log(ui.rich ? "方向键选择，回车确认；已有内容可直接编辑。配置完成后同步保持暂停。" : "输入序号选择，回车沿用默认值。配置完成后同步保持暂停。");
+          return configureConnection((message, secret, metadata) => ui.ask(message, secret, metadata), project.config, auth, {
             root, aliases: await sshAliases(), resolve: sshDefaults,
-            probe: (cfg, credentials) => probeConnection(root, cfg, credentials),
-            checkPath: (cfg, credentials) => checkRemotePath(root, cfg, credentials),
+            select: options => ui.select(options),
+            probe: checks.probe, checkPath: checks.checkPath,
+            log: message => ui.log(message, "warn"),
           });
         }, async scope => {
-          process.stdout.write(scopeText(scope) + "\n");
-          return confirm("检查通过，是否保存配置？", options, scope);
+          ui.scope(scope);
+          return ui.confirm("保存配置？", { details: scope, active: "保存，保持暂停", inactive: "取消" });
         });
       } else if (options.action === "preview") result = await service.preview();
       else if (options.action === "status") result = await service.status();
       else if (options.action === "stop") result = await service.stop();
       else result = await service.sync({ auto: options.action === "start", confirm: async preview => {
-        if (!options.json) process.stdout.write(previewText(preview) + "\n");
-        return confirm("以本地为准同步，是否继续？", options, preview);
+        ui.preview(preview);
+        return ui.confirm("以本地为准同步，是否继续？", { yes: options.yes, details: preview });
       } });
       if (interrupted) throw new SyncError("INTERRUPTED", "操作已中断。");
       if (options.json) process.stdout.write(JSON.stringify({ ok: true, ...result }) + "\n");
-      else if (["init", "config"].includes(options.action)) process.stdout.write("✓ 配置已保存，自动同步保持暂停。执行 devsync sync 或 devsync start 开始同步。\n");
-      else if (options.action === "preview") process.stdout.write(previewText(result) + "\n完整清单：.sync/preview.json；自动同步保持暂停。\n");
-      else if (options.action === "stop") process.stdout.write("✓ 当前项目的自动同步已停止。\n");
+      else if (["init", "config"].includes(options.action)) ui.outro("配置已保存，同步保持暂停。执行 devsync sync 或 devsync start 开始同步。");
+      else if (options.action === "preview") { ui.preview(result); ui.outro("自动同步保持暂停。完整清单：.sync/preview.json"); }
+      else if (options.action === "stop") ui.outro("当前项目的自动同步已停止。");
       else if (options.action === "status") process.stdout.write(statusText(result));
-      else process.stdout.write(`✓ ${result.files} 个文件已对齐，${result.auto ? "后台自动同步已开启" : "本次同步结束"}。\n`);
+      else ui.outro(`${result.files} 个文件已对齐，${result.auto ? "后台自动同步已开启" : "本次同步结束"}。`);
     } finally {
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
@@ -149,6 +123,7 @@ export async function main(args = process.argv.slice(2)) {
     if (options?.signal?.aborted) error = new SyncError("INTERRUPTED", "操作已中断，自动同步请用 devsync status 检查。");
     const json = options?.json || args.includes("--json");
     if (json) process.stdout.write(JSON.stringify({ ok: false, error: errorResult(error) }) + "\n");
+    else if (ui) ui.failure(error);
     else process.stderr.write(`devsync：${error.message}\n`);
     process.exitCode = error.code === "INTERRUPTED" ? 130 : 1;
   }

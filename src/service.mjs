@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readJson, writeJson, localManifest, changes, isProcessAlive, validateRemote } from "./core.mjs";
+import { readJson, writeJson, localManifest, changes, isProcessAlive, validateRemote, validateRemoteField, digest } from "./core.mjs";
 import { loadProject, secureProject, saveConnection, ensureProjectFiles, loadUserConfig } from "./project.mjs";
 import { probeConnection, checkRemotePath } from "./connection.mjs";
 import { ensureTool } from "./install.mjs";
@@ -26,6 +26,12 @@ export class ProjectSync {
   checkCancelled() {
     if (this.signal?.aborted) throw new SyncError("INTERRUPTED", "操作已中断。");
   }
+  async phase(label, task) {
+    this.checkCancelled();
+    if (this.stage) return this.stage(label, task);
+    this.emit({ type: "phase", message: label + "…" });
+    return task();
+  }
   async locked(task) {
     this.checkCancelled();
     await secureProject(this.root);
@@ -50,11 +56,35 @@ export class ProjectSync {
       await this.pause();
       const project = await loadProject(this.root, { validateConfig: false });
       const previousAuth = await this.auth();
-      const answers = await collect(project, previousAuth);
+      // Validation receipts live only in this invocation. A UI cannot mark
+      // arbitrary answers as checked; changed answers are validated again.
+      const probes = new Set(), paths = new Set();
+      const key = (cfg, auth, includePath) => digest(JSON.stringify({
+        ...cfg, remote: { ...cfg.remote, ...(!includePath ? { path: undefined } : {}) }, auth,
+      }));
+      const checks = {
+        probe: async (cfg, auth) => {
+          for (const field of ["host", "username", "port"]) validateRemoteField(field, cfg.remote?.[field]);
+          const id = key(cfg, auth, false);
+          probes.delete(id);
+          const result = await this.phase("验证 SSH 连接和认证", () => this.deps.probeConnection(this.root, cfg, auth));
+          probes.add(id);
+          return result;
+        },
+        checkPath: async (cfg, auth) => {
+          validateRemote(cfg.remote);
+          const id = key(cfg, auth, true);
+          paths.delete(id);
+          const result = await this.phase("验证远端目录", () => this.deps.checkRemotePath(this.root, cfg, auth));
+          paths.add(id);
+          return result;
+        },
+      };
+      const answers = await collect(project, previousAuth, checks);
       validateRemote(answers.cfg.remote);
-      await this.deps.probeConnection(this.root, answers.cfg, answers.auth);
-      await this.deps.checkRemotePath(this.root, answers.cfg, answers.auth);
-      const scope = this.scope(answers.cfg, project.rules);
+      if (!probes.has(key(answers.cfg, answers.auth, false))) await checks.probe(answers.cfg, answers.auth);
+      if (!paths.has(key(answers.cfg, answers.auth, true))) await checks.checkPath(answers.cfg, answers.auth);
+      const scope = this.scope(answers.cfg, project.rules, answers.auth);
       if (!(await confirm(scope))) throw new SyncError("CANCELLED", "已取消，原连接配置已保留，自动同步保持暂停。");
       this.checkCancelled();
       await ensureProjectFiles(this.root, project.rules);
@@ -62,8 +92,10 @@ export class ProjectSync {
       return { configured: true, scope, auto: false };
     });
   }
-  scope(config, rules) {
+  scope(config, rules, auth) {
     return { local: this.root, remote: config.remote, mode: rules.mode,
+      ...(auth ? { authentication: auth.password ? "password" : config.identityFile ? "identity-file" : "ssh-config",
+        ...(config.identityFile ? { identityFile: config.identityFile } : {}) } : {}),
       deletesRemote: true, envFiles: rules.envFiles, exclude: rules.exclude };
   }
   async requiredProject() {
@@ -72,15 +104,16 @@ export class ProjectSync {
     return project;
   }
   async verify(project, auth) {
-    await this.deps.probeConnection(this.root, project.config, auth);
-    await this.deps.checkRemotePath(this.root, project.config, auth);
+    await this.phase("验证 SSH 连接和认证", () => this.deps.probeConnection(this.root, project.config, auth));
+    await this.phase("验证远端目录", () => this.deps.checkRemotePath(this.root, project.config, auth));
   }
   async plan(project, auth) {
-    this.emit({ type: "phase", message: "检查本地与远端差异…" });
-    const remote = await this.deps.remoteManifest(this.root, project.config, auth, project.rules);
-    const local = await localManifest(this.root, project.rules);
+    const { remote, local } = await this.phase("检查本地与远端差异", async () => ({
+      remote: await this.deps.remoteManifest(this.root, project.config, auth, project.rules),
+      local: await localManifest(this.root, project.rules),
+    }));
     const diff = changes(local, remote.files);
-    const result = { scope: this.scope(project.config, project.rules), remoteExists: remote.exists,
+    const result = { scope: this.scope(project.config, project.rules, auth), remoteExists: remote.exists,
       added: diff.added, updated: diff.updated, deleted: diff.deleted };
     await writeJson(path.join(this.dir, "preview.json"), result);
     return result;
@@ -155,7 +188,7 @@ export class ProjectSync {
           const preview = await this.plan(project, auth);
           if (!(await confirm(preview))) throw new SyncError("CANCELLED", "已取消，自动同步保持暂停。");
           this.checkCancelled();
-          const backup = await this.deps.backupRemote(this.root, project.config, auth, [...preview.updated, ...preview.deleted]);
+          const backup = await this.phase("备份受影响的远端文件", () => this.deps.backupRemote(this.root, project.config, auth, [...preview.updated, ...preview.deleted]));
           if (!preview.remoteExists) await this.deps.createRemote(this.root, project.config, auth);
           if (previous) await session.run(["sync", "terminate", session.name]);
           await session.create(project.config, project.rules);
@@ -164,8 +197,7 @@ export class ProjectSync {
         }
         this.checkCancelled();
         await session.resume();
-        this.emit({ type: "phase", message: "正在同步…" });
-        const status = await session.flush();
+        const status = await this.phase("同步文件", () => session.flush());
         const lastRun = { at: new Date().toISOString(), files: status.alpha.files };
         await writeJson(path.join(this.dir, "last-run.json"), lastRun);
         if (auto || keepAuto) {

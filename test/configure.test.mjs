@@ -160,3 +160,46 @@ test("SSH validates draft credentials through askpass without replacing saved se
     assert.equal(JSON.parse(await fs.readFile(path.join(root, ".sync/auth.json"))).password, "old-password");
   }
 });
+
+test("structured prompts select aliases and explicit keys without exposing credentials", { skip: process.platform === "win32" }, async () => {
+  const selections = [], inputs = [];
+  const result = await configureConnection(async (_message, _secret, options) => {
+    inputs.push(options.message);
+    return options.message === "私钥文件路径" ? "~/keys/development" : options.initialValue || "";
+  }, null, {}, {
+    ...base, aliases: ["first", "second"],
+    select: async options => { selections.push(options); return options.message === "选择开发机" ? "second" : "3"; },
+    probe: async (cfg, auth) => {
+      assert.equal(cfg.identityFile, "~/keys/development");
+      assert.deepEqual(auth, {});
+      return { home: "/srv/alice" };
+    },
+  });
+  assert.equal(result.cfg.remote.host, "second");
+  assert.equal(result.cfg.identityFile, "~/keys/development");
+  assert.ok(!inputs.includes("开发机地址或 SSH 别名"));
+  assert.ok(selections[0].options.some(option => option.label === "手动输入地址"));
+});
+
+test("switching from explicit key to SSH config removes the project identity", { skip: process.platform === "win32" }, async () => {
+  const previous = { identityFile: "/old/key", remote: { host: "dev", username: "alice", port: 22, path: "/srv/alice/project" } };
+  const result = await configureConnection(async (_message, _secret, options) => options.initialValue, previous, {}, {
+    ...base, select: async () => "1",
+  });
+  assert.ok(!Object.hasOwn(result.cfg, "identityFile"));
+  assert.equal(previous.identityFile, "/old/key");
+});
+
+test("changing a failed password target requests fresh authentication before probing the new host", async () => {
+  const q = questions(["dev", "", "", "2", "old-password", "newdev", "2", "new-password", ""]);
+  let calls = 0;
+  const result = await configureConnection(q.ask, null, {}, {
+    ...base, probe: async (cfg, auth) => {
+      if (++calls === 1) throw connectionError(Error("Could not resolve hostname dev"));
+      assert.equal(cfg.remote.host, "newdev");
+      assert.equal(auth.password, "new-password");
+      return { home: "/srv/alice" };
+    },
+  });
+  assert.equal(result.auth.password, "new-password");
+});
