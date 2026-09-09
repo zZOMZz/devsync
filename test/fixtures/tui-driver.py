@@ -25,7 +25,7 @@ import shlex
 shim = bin_dir / 'ssh'
 shim.write_text('#!/bin/sh\nunset NODE_OPTIONS\nexec '+shlex.quote(node)+' '+shlex.quote(str(fake))+' "$@"\n')
 shim.chmod(0o700)
-env = dict(os.environ, HOME=str(home), PATH=str(bin_dir)+os.pathsep+os.environ['PATH'], TERM='dumb' if scenario == 'plain' else 'xterm-256color', NO_COLOR='1', TUI_CALLS=str(base / 'calls'))
+env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'), PATH=str(bin_dir)+os.pathsep+os.environ['PATH'], TERM='dumb' if scenario == 'plain' else 'xterm-256color', NO_COLOR='1', TUI_CALLS=str(base / 'calls'))
 if scenario == 'stage-interrupt': env['TUI_SLOW']='1'
 if scenario == 'preview':
     (root / 'new.txt').write_text('added')

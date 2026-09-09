@@ -11,6 +11,7 @@ import { stopWorker, startWorker } from "./worker.mjs";
 import { SyncError } from "./errors.mjs";
 import { projectStatus } from "./status.mjs";
 import { backupPolicy, backupScope, planBackup } from "./backup.mjs";
+import { registerProject } from "./registry.mjs";
 
 // All user interaction is supplied by the caller. Core operations return data;
 // an editor can use this API or the CLI JSON interface without parsing prose.
@@ -22,10 +23,18 @@ export class ProjectSync {
     this.emit = onEvent;
     this.stage = stage;
     this.deps = { ensureTool, remoteManifest, backupRemote, createRemote, estimateBackup, pruneBackups,
-      probeConnection, checkRemotePath, Session, startWorker, stopWorker, ...dependencies };
+      probeConnection, checkRemotePath, Session, startWorker, stopWorker, registerProject, ...dependencies };
   }
   checkCancelled() {
     if (this.signal?.aborted) throw new SyncError("INTERRUPTED", "操作已中断。");
+  }
+  async register() {
+    try { await this.deps.registerProject(this.root); }
+    catch (error) {
+      const message = `操作已完成，但登记到控制面板失败：${error.message}`;
+      this.emit({ type: "warning", message });
+      return message;
+    }
   }
   async phase(label, task) {
     this.checkCancelled();
@@ -92,7 +101,8 @@ export class ProjectSync {
       this.checkCancelled();
       await ensureProjectFiles(this.root, project.rules);
       await saveConnection(this.root, answers.cfg, answers.auth);
-      return { configured: true, scope, auto: false };
+      const warning = await this.register();
+      return { configured: true, scope, auto: false, ...(warning ? { warnings: [warning] } : {}) };
     });
   }
   scope(config, rules, auth) {
@@ -147,6 +157,7 @@ export class ProjectSync {
     return this.locked(async () => { await this.pause(); return { stopped: true }; });
   }
   async status() {
+    this.checkCancelled();
     const config = await readJson(path.join(this.dir, "config.json"), null);
     const control = await readJson(path.join(this.dir, "control.json"), {});
     const lastRun = await readJson(path.join(this.dir, "last-run.json"), null);
@@ -156,7 +167,8 @@ export class ProjectSync {
       if (session) {
         // Queries never resurrect a daemon or initiate a remote connection.
         session.env.MUTAGEN_DISABLE_AUTOSTART = "1";
-        state = await session.get({ timeout: 10000 });
+        this.checkCancelled();
+        state = await session.get({ timeout: 10000, signal: this.signal });
       } else if (control.auto || isProcessAlive(control.pid) || lastRun)
         queryError = new Error("缺少工具记录，无法读取已有同步状态。");
     } catch (error) {
@@ -244,6 +256,8 @@ export class ProjectSync {
           await this.deps.startWorker(this.root, binary);
           keepAuto = true;
         }
+        const warning = await this.register();
+        if (warning) warnings.push(warning);
         return { synced: true, ...lastRun, auto: keepAuto, ...(warnings.length ? { warnings } : {}) };
       } finally {
         if (session && !keepAuto) await session.pause();

@@ -105,6 +105,7 @@ export async function command(
     onStderr,
   } = {},
 ) {
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error("操作已中断。"), { code: "INTERRUPTED" }));
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
       env,

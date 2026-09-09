@@ -12,7 +12,7 @@ node --version
 node bin/devsync.mjs --help
 ```
 
-0.1.0 使用 Node.js ESM，无构建步骤。终端交互依赖 `@clack/prompts` 0.11.0，依赖树由 `package-lock.json` 锁定；源码运行前执行 `npm ci`。发行包通过 `bundleDependencies` 携带交互依赖，隔离安装测试仍使用离线模式。Node 版本要求以 `package.json` 的 `engines` 为准，当前为 `>=18`，已在 Node.js 18.20.8 验证向导和相关回归。改变运行时范围前应同步更新安装说明和测试矩阵。
+0.1.0 使用 Node.js ESM，无构建步骤。Clack 负责向导，Ink 7 + React 19 负责控制面板，依赖树由 `package-lock.json` 锁定；源码运行前执行 `npm ci`。面板使用 `React.createElement`，不需要 JSX 编译步骤。发行包通过 `bundleDependencies` 携带交互依赖，隔离安装测试仍使用离线模式并验证 Ink 视图可加载。本地 Node 要求以 `package.json` 的 `engines` 为准，当前为 `>=22`；远端不需要 Node.js。本次完整验证环境为 macOS ARM64、Node.js 24.14.0。
 
 源码直接运行：
 
@@ -28,7 +28,7 @@ node bin/devsync.mjs status --dir /path/to/test-project --json
 npm test
 ```
 
-初始实现阶段的测试总数为 64；增加 SSH 私钥、状态诊断、终端向导及备份策略回归后为 116。默认未设置真实程序路径时，引擎测试会跳过；其余测试覆盖配置、规则、缓存、服务编排、JSON 和程序包安装。在 Windows 上还有平台限定测试会跳过，应以运行报告为准。
+当前测试总数为 137。默认未设置真实程序路径时，3 项真实引擎测试会跳过；其余测试覆盖配置、规则、缓存、服务编排、项目索引、面板、JSON 和程序包安装。在 Windows 上还有平台限定测试会跳过，应以运行报告为准。
 
 选择具体测试时：
 
@@ -51,6 +51,11 @@ node --test test/cli.test.mjs
 | [ssh-engine.test.mjs](../test/ssh-engine.test.mjs) | 临时回环 SSH 服务、SCP 安装 agent、非默认私钥、后台恢复、密钥轮换和 SSH config/agent |
 | [status.test.mjs](../test/status.test.mjs) | 管理进程与同步状态分离、未知状态、故障诊断、建议动作及查询不写入 |
 | [tui.test.mjs](../test/tui.test.mjs) | 真实 PTY 键盘操作、取消、中断、密码隐藏、窄终端、纯文本及 JSON 输出 |
+| [registry.test.mjs](../test/registry.test.mjs) | 索引只读、路径去重、跨进程并发写入、重新定位、错误文件保护 |
+| [dashboard.test.mjs](../test/dashboard.test.mjs) | 并发刷新、慢查询超时、取消、项目隔离，以及真实 Ink/Clack PTY 交互 |
+| [dashboard-engine.test.mjs](../test/dashboard-engine.test.mjs) | 真实 Mutagen 会话的面板开启/停止、退出不停止后台项目 |
+
+面板测试可以单独运行 `node --test test/registry.test.mjs test/dashboard.test.mjs`。PTY 使用 Python 3 标准库，服务替身只读写临时目录；真实会话测试需提供 `DEVSYNC_TEST_MUTAGEN`。测试使用独立索引，不登记到用户的真实项目清单。
 | [backup.test.mjs](../test/backup.test.mjs) | 备份触发范围、大小估算、真实本地归档/清理、跨项目隔离及异常文件保护 |
 
 单独验证终端向导：`node --test test/tui.test.mjs`。POSIX 的 PTY 用例使用 Python 3 标准库，可通过 `DEVSYNC_TEST_PYTHON` 指定解释器；Python 不存在或在 Windows 上时跳过这部分用例。测试使用临时 HOME、项目和 SSH stand-in，不访问个人 SSH 配置或开发机；该测试不能替代真实 SSH 验收。

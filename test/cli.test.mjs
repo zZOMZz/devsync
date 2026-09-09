@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { command, writeJson } from "../src/core.mjs";
 import { parseArgs } from "../src/cli.mjs";
 const bin = fileURLToPath(new URL("../bin/devsync.mjs", import.meta.url));
@@ -58,6 +58,8 @@ test("packed npm artifact installs into an isolated prefix and runs outside its 
   const pack = JSON.parse(await command(npm, ["--cache", path.join(base, "npm-cache"), "pack", "--json", "--ignore-scripts", "--pack-destination", base], { cwd: packageRoot }))[0];
   assert.ok(pack.files.some(file => file.path === "bin/devsync.mjs"));
   assert.ok(pack.files.some(file => file.path === "src/releases.json"));
+  assert.ok(pack.files.some(file => file.path === "node_modules/ink/package.json"));
+  assert.ok(pack.files.some(file => file.path === "node_modules/react/package.json"));
   assert.ok(pack.files.every(file => !file.path.startsWith("test/") && !file.path.startsWith(".sync/")));
   const prefix = path.join(base, "installed");
   await command(npm, ["--cache", path.join(base, "npm-cache"), "install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", "--offline", path.join(base, pack.filename)]);
@@ -66,6 +68,8 @@ test("packed npm artifact installs into an isolated prefix and runs outside its 
   const result = JSON.parse(await command(path.join(prefix, "bin/devsync"), ["status", "--json"], { cwd: project }));
   assert.equal(result.project, await fs.realpath(project));
   assert.equal(result.ok, true);
+  const view = pathToFileURL(path.join(prefix, "lib/node_modules/devsync/src/dashboard-view.mjs")).href;
+  assert.equal((await command(process.execPath, ["--input-type=module", "-e", `console.log(typeof (await import(${JSON.stringify(view)})).dashboardView)`])).trim(), "function");
 });
 
 test("status CLI reports progress, manager failures and actionable file diagnostics in text and JSON", { skip: process.platform === "win32" }, async t => {

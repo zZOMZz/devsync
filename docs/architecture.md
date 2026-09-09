@@ -27,6 +27,10 @@ flowchart TD
 | [bin/devsync.mjs](../bin/devsync.mjs) | 可执行入口 |
 | [src/cli.mjs](../src/cli.mjs) | 参数解析、信号处理、命令分发、文本/JSON 输出 |
 | [src/terminal-ui.mjs](../src/terminal-ui.mjs) | Clack 向导、范围/差异展示、纯文本回退、阶段进度与终端清理 |
+| [src/registry.mjs](../src/registry.mjs) | 用户级项目路径索引、去重、原子更新与跨进程锁 |
+| [src/dashboard-model.mjs](../src/dashboard-model.mjs) | 并发状态查询、超时、取消及项目操作分发 |
+| [src/dashboard-view.mjs](../src/dashboard-view.mjs) | Ink 列表、详情、键盘操作与窗口适配 |
+| [src/dashboard.mjs](../src/dashboard.mjs) | Ink/Clack 交接、面板生命周期与 JSON 快照 |
 | [src/configure.mjs](../src/configure.mjs) | 配置问题与分项重试，输入函数由调用方提供 |
 | [src/service.mjs](../src/service.mjs) | `ProjectSync`，编排确认、备份、会话与后台状态 |
 | [src/status.mjs](../src/status.mjs) | 状态契约、同步/管理进程分离、诊断与终端输出 |
@@ -57,7 +61,15 @@ flowchart TD
 
 配置收集回调现在接收服务提供的 `checks.probe` / `checks.checkPath`。成功检查在本次调用的内存中记录配置与认证摘要；SSH 验证不依赖目标路径，目录验证包含完整配置。保存前仅补做缺失或配置已变化的检查，失败会撤销同一组参数的旧检查结果。未使用这些检查的 API 调用方仍由服务完整验证，不接受外部传入的“已验证”标志。验证记录不写入文件。
 
-CLI 将结构化输入、选择和阶段回调交给 `terminal-ui.mjs`，配置流程与 `ProjectSync` 不导入终端组件。向导结束时恢复 raw mode 和光标；阶段进度使用现有可清理的 Progress 实现，信号交给 CLI 取消子进程并释放项目锁。JSON 模式抑制全部向导/阶段输出，纯文本终端使用序号选择。`@clack/prompts` 固定为兼容 Node.js 18 的版本并随程序包分发。
+CLI 将结构化输入、选择和阶段回调交给 `terminal-ui.mjs`，配置流程与 `ProjectSync` 不导入终端组件。向导结束时恢复 raw mode 和光标；阶段进度使用现有可清理的 Progress 实现，信号交给 CLI 取消子进程并释放项目锁。JSON 模式抑制全部向导/阶段输出，纯文本终端使用序号选择。交互依赖统一锁定并随程序包分发，本地运行要求 Node.js 22+。
+
+## 多项目发现与控制面板
+
+用户级 `projects.json` 只记录本地项目路径和名称。成功配置或同步后由服务登记；登记失败输出警告，不把已成功的配置/同步回滚成失败。查询和停止不会增加或删除索引记录。索引写入复用跨进程锁和原子 JSON 写入，损坏或未知版本的索引不会被空列表覆盖。
+
+面板每 3 秒重新读取索引，以最多 3 个并发任务查询项目状态，单项总查询上限 12 秒。每个结果独立通知视图；读操作使用可取消信号，关闭面板时清除队列和定时器、取消当前查询，不调用项目 stop。目录不可用时保留记录和错误状态。
+
+Ink 在 alternate screen 中展示列表和详情。其键盘监听就绪后才显示可操作内容。进入配置、同步确认或索引操作前，完整卸载 Ink、暂停查询，再将标准输入引用交给 Clack；结束后重新挂载 Ink。全程一次只执行一个交互操作，底层项目锁继续处理其他终端的并发命令。开启和停止复用 ProjectSync，确认、备份策略和项目隔离保持原有语义。
 
 ## 同步流程
 

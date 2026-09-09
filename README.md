@@ -10,7 +10,7 @@
 
 ## 安装
 
-本机需要 Node.js 18+、OpenSSH（ssh/scp）、curl、tar。下载清单支持 macOS ARM64、Linux x64/ARM64、Windows x64/ARM64。远端需要 Linux、GNU find/tar 和 sha256sum。
+本机需要 Node.js 22+、OpenSSH（ssh/scp）、curl、tar。Node.js 仅用于运行本地 CLI，远端开发机无需安装 Node.js。下载清单支持 macOS ARM64、Linux x64/ARM64、Windows x64/ARM64。远端需要 Linux、GNU find/tar 和 sha256sum。
 
 在 devsync 源码目录安装：
 
@@ -44,9 +44,12 @@ devsync start      # 同步并开启后台自动同步
 devsync status     # 查看连接、同步及读写错误
 devsync stop       # 停止当前项目的自动同步
 devsync config     # 修改连接配置，保持暂停
+devsync dashboard  # 集中查看与管理已登记项目
 ```
 
 任意命令可通过 `--dir /path/to/project` 或 `-C /path/to/project` 指定项目目录。默认使用当前目录本身，不向父目录猜测项目根目录。符号链接形式的本地项目路径会解析为真实路径。
+
+`dashboard` 面向用户的全部已登记项目，`--dir` 仅用于初始选中项目，不会过滤列表。
 
 初始化复用现有 `.sync/config.json` 和密码，发现 SSH 别名，并读取有效 SSH 配置中的账号与端口。支持密钥/agent 或密码认证，密码输入隐藏。默认远端路径根据实际 `$HOME` 和本地目录名推导，可修改。地址、端口、认证和目录分步验证，错误时修正对应项。确认页展示本地与远端目录、删除行为和允许同步的环境文件。
 
@@ -65,6 +68,14 @@ SSH 私钥优先通过 SSH config 管理。macOS/Linux 也可以在私有 `.sync
 后台模式关闭终端后继续运行，只轮询与传输变化文件。每个项目有独立的 Mutagen 数据目录和重连管理进程；停止一个项目不影响其他项目。后台模式中执行 `sync` 会立即同步并保持后台模式。重新启动电脑后执行 `start` 恢复；`status` 不会启动后台服务。
 
 `status` 分别显示同步状态和后台重连管理状态：扫描、传输、对齐、暂停、断连及未知状态都有独立说明。查询失败不会被当成“传输已停止”；后台管理退出后，仍启用的同步会话也会明确显示。文件错误和冲突带有路径及下一步操作建议。显示的“上次命令同步成功”来自最近一次 `sync/start`，不是后台最后一次传输时间。
+
+## 多项目控制面板
+
+在任意目录运行 `devsync dashboard`。Ink 面板每约 3 秒刷新，已开启自动同步的项目排在前面；方向键选择项目，Enter 查看详情，`s` 开启、`x` 停止、`c` 修改配置，`q` 退出。退出面板不会停止后台同步。
+
+旧项目首次使用时按 `a` 输入项目目录；之后 `init/config/sync/start` 成功会自动登记。索引位于用户配置目录下的 `devsync/projects.json`，只保存名称和本地路径，不保存密码。`l` 重新定位记录，`d` 只移除记录，不删除项目文件或停止同步。
+
+需要同步确认时，面板切换到 Clack 预览/确认流程，沿用项目的备份策略；配置完成后仍保持暂停。可用 `devsync dashboard --json` 获取无界面的项目快照。更多说明见[控制面板](docs/dashboard.md)。
 
 ## 项目规则与个人信息
 
@@ -175,7 +186,7 @@ devsync sync --json --yes
 
 ## 开发与测试
 
-源码运行前安装锁定依赖。终端交互使用 `@clack/prompts` 0.11.0，保持 Node.js 18 支持；`npm pack` 会携带交互依赖及其传递依赖，生成的 `.tgz` 可以离线安装：
+源码运行前安装锁定依赖。配置向导使用 `@clack/prompts`，控制面板使用 Ink 7 和 React 19，本地运行要求 Node.js 22+；`npm pack` 会携带交互依赖及其传递依赖，生成的 `.tgz` 可以离线安装：
 
 ```bash
 npm ci

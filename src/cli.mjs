@@ -20,10 +20,11 @@ export const help = `devsync — 本地源码同步到 Linux 开发机
   start      同步并开启后台自动模式
   stop       停止当前项目的自动同步
   status     查看当前项目状态（不会启动后台进程）
+  dashboard  打开所有已登记项目的控制面板
 
 选项：
   --dir, -C  指定项目目录，默认使用当前目录
-  --json     输出结构化 JSON（status/preview/sync/start/stop）
+  --json     输出结构化 JSON（含 dashboard 项目快照）
   --yes      确认预览结果并允许首次接入或配置变更后的同步
   --help     显示帮助
   --version  显示版本
@@ -50,7 +51,7 @@ export function parseArgs(args) {
     result.action = arg;
   }
   result.action ||= "help";
-  if (!["help", "init", "config", "preview", "sync", "start", "stop", "status", "_worker"].includes(result.action))
+  if (!["help", "init", "config", "preview", "sync", "start", "stop", "status", "dashboard", "_worker"].includes(result.action))
     throw new SyncError("USAGE", `未知命令：${result.action}`);
   if (result.action !== "_worker" && (result.binary || result.token)) throw new SyncError("USAGE", "无效的内部选项。");
   if (result.action === "_worker" && (!result.binary || !result.token)) throw new SyncError("USAGE", "后台启动参数不完整。");
@@ -67,6 +68,11 @@ export async function main(args = process.argv.slice(2)) {
     if (options.version) {
       const pkg = await readJson(fileURLToPath(new URL("../package.json", import.meta.url)));
       process.stdout.write(pkg.version + "\n"); return;
+    }
+    if (options.action === "dashboard") {
+      const { runDashboard } = await import("./dashboard.mjs");
+      await runDashboard({ json: options.json, initialRoot: await resolveProject(options.dir) });
+      return;
     }
     if (["init", "config"].includes(options.action) && (!process.stdin.isTTY || !process.stdout.isTTY))
       throw new SyncError("INTERACTION_REQUIRED", "配置需要交互终端，请执行 devsync init 或 devsync config。");

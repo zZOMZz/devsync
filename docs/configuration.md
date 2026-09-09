@@ -183,6 +183,8 @@ Linux/macOS 默认路径为 `~/.config/devsync/config.json`，绝对路径的 `X
 
 主要错误码包括 `USAGE`、`INTERACTION_REQUIRED`、`NOT_CONFIGURED`、`INVALID_RULES`、`INVALID_USER_CONFIG`、`INVALID_PROJECT`、`INVALID_STATE`、`PROJECT_PATH_TOO_LONG`、`CONFIRMATION_REQUIRED`、`CANCELLED`、`INTERRUPTED`、`WORKER_BUSY`、`WORKER_START_FAILED`。SSH 字段错误会转换为 `SSH_AUTH`、`SSH_HOST`、`SSH_PATH`、`SSH_CONNECTION`；未归类错误仍可能为 `SYNC_FAILED` 或原始系统错误码。
 
+`devsync dashboard --json` 提供用户级项目快照，使用独立的 `dashboardVersion: 1`；项目行复用本节所述状态字段并省略底层 `session`。项目索引位置、字段和管理操作见[控制面板](dashboard.md)。
+
 ## 核心 API
 
 公共导出以 [src/index.mjs](../src/index.mjs) 为准。仓库根目录脚本示例：
@@ -212,3 +214,5 @@ const status = await service.status();
 `checks.probe(cfg, auth)` 返回 SSH 探测结果（含 `home`），`checks.checkPath(cfg, auth)` 验证目录。服务记录本次回调中成功验证的参数，提交相同配置时复用；变更目标/认证、检查失败或未调用服务检查时，保存前仍补做必要校验。记录仅在内存中存活到本次 configure 结束，取消不保存草稿。
 
 配置确认和预览的 `scope` 新增 `authentication`（`ssh-config`、`identity-file`、`password`），指定私钥时附 `identityFile` 路径；不返回密码或私钥内容。CLI 的可视向导、序号选择和 JSON 输出均复用同一服务流程。交互操作见[终端交互](terminal.md)。
+
+成功的 `configure` 和 `sync` 会将本地项目登记到用户级索引。索引写入失败不撤销已经成功的配置或同步，而是产生 warning 事件，并在返回对象的 `warnings` 中说明原因。`status`、`stop` 和面板查询不会自动登记项目。

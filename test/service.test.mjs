@@ -19,6 +19,7 @@ async function fixture(t) {
   let state = null;
   const calls = [];
   const dependencies = {
+    registerProject: async () => {},
     ensureTool: async () => { calls.push("tool"); return "/mock/mutagen"; },
     remoteManifest: async () => ({ exists: true, files: { "main.py": "old", "obsolete.py": "old" } }),
     estimateBackup: async () => 128,
@@ -315,4 +316,26 @@ test("lowering retention applies after the next successful sync without creating
   await service.sync({ confirm: async () => assert.fail("retention is not a transfer change") });
   assert.deepEqual(keeps, [3, 1]);
   assert.equal(f.calls.filter(call => Array.isArray(call) && call[0] === "backup").length, 1);
+});
+
+test("successful configuration and synchronization register projects; cancelled configuration does not", async t => {
+  const f = await fixture(t), roots = [];
+  f.dependencies.registerProject = async root => { roots.push(root); };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  const collect = async () => ({ cfg: f.config, auth: {} });
+  await assert.rejects(service.configure(collect, async () => false), { code: "CANCELLED" });
+  assert.deepEqual(roots, []);
+  await service.configure(collect, async () => true);
+  await service.sync({ auto: true, confirm: async () => true });
+  assert.deepEqual(roots, [f.root, f.root]);
+});
+
+test("registry failure is reported without undoing a successful synchronization", async t => {
+  const f = await fixture(t);
+  f.dependencies.registerProject = async () => { throw Error("index unavailable"); };
+  const result = await new ProjectSync(f.root, { dependencies: f.dependencies }).sync({ auto: true, confirm: async () => true });
+  assert.equal(result.synced, true);
+  assert.equal(result.auto, true);
+  assert.match(result.warnings[0], /登记到控制面板失败/);
+  assert.equal(f.calls.at(-1), "startWorker");
 });
