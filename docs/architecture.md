@@ -1,5 +1,7 @@
 # 架构与运行流程
 
+本文面向源码阅读与开发。首次了解项目可先读[核心概念](core-concepts.md)，命令及选项用法见[命令与参数](cli.md)。
+
 ## 分层
 
 ```mermaid
@@ -25,7 +27,9 @@ flowchart TD
 | 文件 | 职责 |
 | --- | --- |
 | [bin/devsync.mjs](../bin/devsync.mjs) | 可执行入口 |
+| [src/commands.mjs](../src/commands.mjs) | 公开命令和选项清单，由参数解析、帮助和补全共用 |
 | [src/cli.mjs](../src/cli.mjs) | 参数解析、信号处理、命令分发、文本/JSON 输出 |
+| [src/completion.mjs](../src/completion.mjs) | zsh 补全生成、参数验证及用户 Shell 配置区块管理 |
 | [src/terminal-ui.mjs](../src/terminal-ui.mjs) | Clack 向导、范围/差异展示、纯文本回退、阶段进度与终端清理 |
 | [src/registry.mjs](../src/registry.mjs) | 用户级项目路径索引、去重、原子更新与跨进程锁 |
 | [src/dashboard-model.mjs](../src/dashboard-model.mjs) | 并发状态查询、超时、取消及项目操作分发 |
@@ -34,6 +38,7 @@ flowchart TD
 | [src/configure.mjs](../src/configure.mjs) | 配置问题与分项重试，输入函数由调用方提供 |
 | [src/service.mjs](../src/service.mjs) | `ProjectSync`，编排确认、备份、会话与后台状态 |
 | [src/status.mjs](../src/status.mjs) | 状态契约、同步/管理进程分离、诊断与终端输出 |
+| [src/diagnostics.mjs](../src/diagnostics.mjs) | 问题分类、失败快照、密码脱敏及按原因汇总输出 |
 | [src/project.mjs](../src/project.mjs) | 项目真实路径、配置加载、私有目录权限与保存 |
 | [src/rules.mjs](../src/rules.mjs) | 规则校验、匹配与 Mutagen 排除参数 |
 | [src/connection.mjs](../src/connection.mjs) | SSH 别名、有效默认值、连通性、远端依赖及权限检查 |

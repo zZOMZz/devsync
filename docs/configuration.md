@@ -2,6 +2,8 @@
 
 本文描述 0.1.0 的实际实现。接口尚未承诺跨版本稳定；修改时同步更新文档与契约测试。
 
+理解这些配置为何分开保存，可先阅读[核心概念](core-concepts.md#配置和状态分别放在哪里)。查 CLI 选项、适用命令和调用示例，见[命令与参数](cli.md)。
+
 ## 配置归属
 
 | 位置 | 内容 | 共享方式 |
@@ -26,14 +28,14 @@
 }
 ```
 
-| 字段 | 当前约束 |
-| --- | --- |
-| `version` | 仅接受数字 1 |
-| `mode` | 仅接受 `one-way-replica` |
-| `exclude` | 字符串数组；显式提供时替换默认列表 |
-| `envFiles` | 允许同步的具体 `.env*` 文件相对路径，默认空数组 |
-| `pollingInterval` | 1–3600 的整数秒数，默认 1 |
-| `$schema` | 可接受但规范化时移除；目前未提供配套 JSON Schema 文件 |
+| 字段 | 类型 | 省略时的默认值 | 含义与约束 |
+| --- | --- | --- | --- |
+| `version` | 整数 | `1` | 规则格式版本，仅接受数字 1 |
+| `mode` | 字符串 | `"one-way-replica"` | 同步方向，仅支持以本地为准 |
+| `exclude` | 字符串数组 | `[".vscode", ".idea", ".DS_Store", "node_modules", "dist"]` | 显式提供时替换默认列表 |
+| `envFiles` | 字符串数组 | `[]` | 允许同步的具体 `.env*` 文件相对路径 |
+| `pollingInterval` | 整数 | `1` | 本地扫描间隔，单位秒，范围 1–3600 |
+| `$schema` | 元数据 | 无 | 可接受但规范化时移除；目前未提供配套 JSON Schema 文件 |
 
 未知字段报 `INVALID_RULES`。`.sync`、`.git`、`.hg`、`.svn` 和根目录 `sync.config.json` 始终排除，即使 `exclude` 为空也不改变。
 
@@ -64,6 +66,18 @@
   }
 }
 ```
+
+| 字段 | 类型 | 填写方式与约束 |
+| --- | --- | --- |
+| `remote.host` | 字符串 | 必填，主机名、IPv4 或 SSH 别名；向导可沿用旧值 |
+| `remote.username` | 字符串 | 必填，远端账号；向导从旧配置或有效 SSH 配置取得默认值 |
+| `remote.port` | 整数 | 必填，1–65535；向导读取旧值或 SSH 配置，缺省使用 22 |
+| `remote.path` | 字符串 | 必填，远端项目绝对路径；新目标在向导中默认使用远端主目录加本地项目目录名 |
+| `identityFile` | 字符串，可省略 | macOS/Linux 当前项目的私钥路径；省略时按所选认证方式使用 SSH config/agent 或密码 |
+| `backup.mode` | 字符串，可省略 | `"auto"` 或 `"off"`，默认 `"auto"` |
+| `backup.keep` | 整数，可省略 | 自动备份保留数量，1–100，默认 3 |
+
+表中的地址、账号、端口和远端路径默认值由向导填写；手工编写 `.sync/config.json` 时需要提供完整 `remote` 对象。`identityFile` 和 `backup` 与 `remote` 同级，`mode/keep` 写在 `backup` 对象中，具体行为见下文。
 
 主机字段支持主机名、IPv4 和 SSH 别名，目前不接受 IPv6 字面量。端口为 1–65535 的整数。远端路径必须是独占项目绝对路径，不能包含 `..` 或使用系统目录；远端还会检查权限、主目录和符号链接目标等条件。
 
@@ -127,7 +141,7 @@ Linux/macOS 默认路径为 `~/.config/devsync/config.json`，绝对路径的 `X
 
 ## CLI 输出契约
 
-`status`、`preview`、`sync`、`start` 和 `stop` 支持 `--json`，输出单个 JSON 对象。`init/config --json` 当前被拒绝。
+`status`、`preview`、`sync`、`start` 和 `stop` 支持 `--json`，输出单个 JSON 对象。`dashboard` 提供项目快照，`completion` 提供脚本或安装/卸载结果；具体调用见[命令与参数](cli.md)。`init/config --json` 当前被拒绝。
 
 成功查询尚未启动的项目，示例（部分兼容字段）：
 

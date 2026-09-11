@@ -4,9 +4,11 @@
 
 项目无需 Node.js 工程或 `package.json`，无需复制同步脚本。当前为本地分发的 0.1.0 版本，尚未发布到 npm。
 
-## 文档与继续开发
+## 学习与文档
 
-新工作空间直接打开本仓库。先读[工作空间交接](docs/handoff.md)，了解当前实现、验收状态和后续优化候选。完整资料见[文档索引](docs/README.md)，涵盖架构、配置/API、开发测试和验收步骤。
+第一次接触项目，建议先读[核心概念（Core Concepts）](docs/core-concepts.md)，理解同步方向、规则、配置、确认与备份，以及后台运行和状态查询之间的关系。查命令写法、参数默认值和适用范围，阅读[命令与参数](docs/cli.md)；查 JSON 字段，阅读[配置与接口](docs/configuration.md)。
+
+完整资料见[文档索引](docs/README.md)。参与开发时可接着阅读[架构与流程](docs/architecture.md)和[开发与测试](docs/development.md)；新工作空间的背景与接续事项见[工作空间交接](docs/handoff.md)。
 
 ## 安装
 
@@ -57,7 +59,7 @@ npm install --global ./devsync-0.1.0.tgz
 cd /path/to/project
 devsync init       # 引导配置，验证后确认保存
 devsync preview    # 暂停当前项目自动同步，检查差异
-devsync sync       # 同步一次，完成后暂停
+devsync sync       # 同步一次；原自动会话可复用时保留自动模式
 devsync start      # 同步并开启后台自动同步
 devsync status     # 查看连接、同步及读写错误
 devsync stop       # 停止当前项目的自动同步
@@ -65,7 +67,7 @@ devsync config     # 修改连接配置，保持暂停
 devsync dashboard  # 集中查看与管理已登记项目
 ```
 
-任意命令可通过 `--dir /path/to/project` 或 `-C /path/to/project` 指定项目目录。默认使用当前目录本身，不向父目录猜测项目根目录。符号链接形式的本地项目路径会解析为真实路径。
+项目命令可通过 `--dir /path/to/project` 或 `-C /path/to/project` 指定项目目录。默认使用当前目录本身，不向父目录猜测项目根目录。符号链接形式的本地项目路径会解析为真实路径。完整选项及适用范围见[参数速查](docs/cli.md#参数速查)。
 
 `dashboard` 面向用户的全部已登记项目，`--dir` 仅用于初始选中项目，不会过滤列表。
 
@@ -83,7 +85,7 @@ SSH 私钥优先通过 SSH config 管理。macOS/Linux 也可以在私有 `.sync
 
 `init/config` 可选择自动备份、关闭备份或自定义保留数量（默认最近 3 份）。确认页显示本次文件数和估算原始大小，并可明确选择“跳过本次备份，直接同步”。`--yes` 按项目备份策略执行，不自动跳过备份。新备份生成并同步成功后，仅清理当前项目、当前目标登记的新格式旧备份；旧版本备份和未登记的文件保留。配置说明见[备份策略](docs/configuration.md#备份策略)。
 
-后台模式关闭终端后继续运行，只轮询与传输变化文件。每个项目有独立的 Mutagen 数据目录和重连管理进程；停止一个项目不影响其他项目。后台模式中执行 `sync` 会立即同步并保持后台模式。重新启动电脑后执行 `start` 恢复；`status` 不会启动后台服务。
+后台模式关闭终端后继续运行，只轮询与传输变化文件。每个项目有独立的 Mutagen 数据目录和重连管理进程；停止一个项目不影响其他项目。后台模式中执行 `sync`，配置未变且原会话可复用时会保持后台模式；需要重建会话时按单次同步结束。希望持续同步时使用 `start`。重新启动电脑后执行 `start` 恢复；`status` 不会启动后台服务。
 
 `status` 分别显示同步状态和后台重连管理状态：扫描、传输、对齐、暂停、断连及未知状态都有独立说明。查询失败不会被当成“传输已停止”；后台管理退出后，仍启用的同步会话也会明确显示。文件错误和冲突带有路径及下一步操作建议。显示的“上次命令同步成功”来自最近一次 `sync/start`，不是后台最后一次传输时间。
 
@@ -112,7 +114,8 @@ SSH 私钥优先通过 SSH config 管理。macOS/Linux 也可以在私有 `.sync
     ├── backups.json       # 本项目创建并校验通过的备份记录，供保留策略使用
     ├── preview.json       # 最近的差异清单
     ├── control.json       # 后台管理进程状态
-    └── last-run.json      # 最近成功同步时间
+    ├── last-run.json      # 最近一次 sync/start 成功传输的记录
+    └── last-failure.json  # 上次 sync/start 失败诊断，成功传输后清除
 ```
 
 缺少 `sync.config.json` 时使用默认规则。显式提供 `exclude` 时替换默认排除列表；`.sync`、`.git`、`.hg`、`.svn` 和根目录 `sync.config.json` 始终排除。
