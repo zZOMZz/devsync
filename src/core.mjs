@@ -82,6 +82,9 @@ export function healthy(s) {
     s.beta?.connected &&
     !s.lastError &&
     !s.conflicts?.length &&
+    !s.excludedConflicts &&
+    !s.alpha?.excludedScanProblems && !s.beta?.excludedScanProblems &&
+    !s.alpha?.excludedTransitionProblems && !s.beta?.excludedTransitionProblems &&
     !s.alpha?.scanProblems?.length &&
     !s.beta?.scanProblems?.length &&
     !s.alpha?.transitionProblems?.length &&

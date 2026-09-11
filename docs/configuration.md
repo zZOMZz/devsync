@@ -216,3 +216,9 @@ const status = await service.status();
 配置确认和预览的 `scope` 新增 `authentication`（`ssh-config`、`identity-file`、`password`），指定私钥时附 `identityFile` 路径；不返回密码或私钥内容。CLI 的可视向导、序号选择和 JSON 输出均复用同一服务流程。交互操作见[终端交互](terminal.md)。
 
 成功的 `configure` 和 `sync` 会将本地项目登记到用户级索引。索引写入失败不撤销已经成功的配置或同步，而是产生 warning 事件，并在返回对象的 `warnings` 中说明原因。`status`、`stop` 和面板查询不会自动登记项目。
+
+### 失败诊断
+
+状态 JSON 新增可空的 `lastFailure`：`version: 1`、`at`、`phase`、可选 `remote` 和 `issues`。问题包含 `code`、`message`、可选 `side/path/count`，以及 `category/title/advice`。这是上次 `sync/start` 命令失败快照，不计入当前 `sync.problemCount`，也不改变当前对齐判断。取消和确认请求不会写入失败快照；成功传输清除快照。失败命令的 JSON 在 `error.details.diagnostic` 返回同一诊断结构。
+
+终端默认按原因和端点汇总，每组最多显示 3 项；`status --verbose` 展示所有已记录的问题，`--json` 始终提供完整结构。Mutagen 省略的路径详情无法恢复，只记录省略数量。

@@ -8,6 +8,10 @@ for root in roots:
     (root / '.sync/config.json').write_text(json.dumps({'remote': {'host':'dev','username':'alice','port':22,'path':'/srv/project'}}))
 (base / 'projects.json').write_text(json.dumps({'version':1,'projects':[{'root':str(p),'name':p.name} for p in roots[:2]]}))
 (base / 'state.json').write_text(json.dumps({str(roots[0]): {'auto':False}, str(roots[1]): {'auto':True}}))
+if scenario == 'failure':
+    state = json.loads((base / 'state.json').read_text())
+    state[str(roots[0])]['lastFailure'] = {'version': 1, 'at': '2026-09-10T02:16:00Z', 'phase': '同步文件', 'issues': [{'code': 'FILE_WRITE', 'side': 'remote', 'path': 'dist/app.js', 'message': 'permission denied', 'title': '远端文件写入权限不足'}]}
+    (base / 'state.json').write_text(json.dumps(state))
 if scenario == 'relocate': roots[0].rename(base / 'moved')
 env=dict(os.environ, TERM='xterm-256color', NO_COLOR='1', XDG_CONFIG_HOME=str(base / 'config'), HOME=str(base))
 (base/'.ssh').mkdir()
@@ -72,6 +76,14 @@ try:
         mark=send('l'); wait_for('◆  项目目录',mark)
         mark=send('\x15'+str(base/'moved')+'\r'); wait_for('已登记：moved',mark)
         send('q')
+    elif scenario=='failure':
+        wait_for('上次失败')
+        mark=send('\r'); wait_for('上次命令失败',mark)
+        for _ in range(16):
+            send('\x1b[B'); pump(.05)
+        wait_for('permission denied')
+        wait_for('父目录')
+        send('\x1b'); pump(.1); send('q')
     elif scenario=='details':
         mark=send('\r'); wait_for('远端：',mark)
         fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',20,44,0,0))

@@ -1,3 +1,4 @@
+import { failureRecord } from "./diagnostics.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readJson, writeJson, localManifest, changes, isProcessAlive, validateRemote, validateRemoteField, digest } from "./core.mjs";
@@ -38,6 +39,7 @@ export class ProjectSync {
   }
   async phase(label, task) {
     this.checkCancelled();
+    this.currentPhase = label;
     if (this.stage) return this.stage(label, task);
     this.emit({ type: "phase", message: label + "…" });
     return task();
@@ -161,6 +163,7 @@ export class ProjectSync {
     const config = await readJson(path.join(this.dir, "config.json"), null);
     const control = await readJson(path.join(this.dir, "control.json"), {});
     const lastRun = await readJson(path.join(this.dir, "last-run.json"), null);
+    const lastFailure = await readJson(path.join(this.dir, "last-failure.json"), null);
     let state = null, queryError = null;
     try {
       const session = await this.storedSession();
@@ -174,16 +177,18 @@ export class ProjectSync {
     } catch (error) {
       queryError = error;
     }
-    return projectStatus({ root: this.root, configured: Boolean(config), control, session: state, queryError, lastRun });
+    return projectStatus({ root: this.root, configured: Boolean(config), control, session: state, queryError, lastRun, lastFailure });
   }
   async sync({ auto = false, confirm = async () => false } = {}) {
     return this.locked(async () => {
-      let session, keepAuto = false;
+      let session, keepAuto = false, failure, syncAuth, syncRemote;
+      this.currentPhase = "准备同步";
       const warnings = [];
       try {
         const project = await this.requiredProject();
         const policy = backupPolicy(project.config.backup);
         const auth = await this.auth();
+        syncAuth = auth; syncRemote = project.config.remote;
         const current = await readJson(path.join(this.dir, "control.json"), {});
         keepAuto = Boolean(current.auto && isProcessAlive(current.pid));
         const id = fingerprint(this.root, project.config, project.rules, auth);
@@ -197,6 +202,7 @@ export class ProjectSync {
         await this.verify(project, auth);
         const user = await loadUserConfig();
         this.checkCancelled();
+        this.currentPhase = "准备同步工具";
         const binary = await this.deps.ensureTool(this.root, {
           stage: this.stage, log: message => this.emit({ type: "phase", message }),
           env: {
@@ -208,6 +214,7 @@ export class ProjectSync {
         });
         await writeJson(path.join(this.dir, "tool.json"), { path: binary });
         session = new this.deps.Session(this.root, binary, auth);
+        this.currentPhase = "读取同步会话";
         const previous = await session.get();
         if (!previous || accepted.fingerprint !== id) {
           keepAuto = false;
@@ -220,8 +227,9 @@ export class ProjectSync {
           const skipBackup = decision?.skipBackup === true;
           const backup = preview.backup.enabled && !skipBackup
             ? await this.phase("备份受影响的远端文件", () => this.deps.backupRemote(this.root, project.config, auth, preview.backup.files)) : null;
+          this.currentPhase = "创建同步会话";
           if (!preview.remoteExists) await this.deps.createRemote(this.root, project.config, auth);
-          if (previous) await session.run(["sync", "terminate", session.name]);
+          if (previous) await session.terminate();
           await session.create(project.config, project.rules);
           const nextScope = backupScope(this.root, project.config, project.rules);
           const sameTarget = accepted.backupScope?.root === this.root && JSON.stringify(accepted.backupScope.remote) === JSON.stringify(nextScope.remote);
@@ -233,10 +241,13 @@ export class ProjectSync {
           if (backup) this.emit({ type: "backup", path: backup });
         }
         this.checkCancelled();
+        this.currentPhase = "恢复同步会话";
         await session.resume();
         const status = await this.phase("同步文件", () => session.flush());
+        this.currentPhase = "保存同步结果";
         const lastRun = { at: new Date().toISOString(), files: status.alpha.files };
         await writeJson(path.join(this.dir, "last-run.json"), lastRun);
+        await fs.rm(path.join(this.dir, "last-failure.json"), { force: true });
         if (!accepted.backupScope && accepted.fingerprint === id) {
           accepted = { ...accepted, backupScope: backupScope(this.root, project.config, project.rules), backupRetentionKeep: policy.keep };
           await writeJson(path.join(this.dir, "accepted.json"), accepted);
@@ -253,14 +264,35 @@ export class ProjectSync {
         }
         if (auto || keepAuto) {
           this.checkCancelled();
+          this.currentPhase = "启动后台管理";
           await this.deps.startWorker(this.root, binary);
           keepAuto = true;
         }
         const warning = await this.register();
         if (warning) warnings.push(warning);
         return { synced: true, ...lastRun, auto: keepAuto, ...(warnings.length ? { warnings } : {}) };
+      } catch (error) {
+        failure = error;
+        if (!["CANCELLED", "INTERRUPTED", "CONFIRMATION_REQUIRED"].includes(error.code)) {
+          const diagnostic = failureRecord(error, { phase: this.currentPhase, password: syncAuth?.password, remote: syncRemote });
+          try { error.details = { ...error.details, ...(error.details?.issues ? { issues: diagnostic.issues } : {}), diagnostic }; } catch {}
+          try { await writeJson(path.join(this.dir, "last-failure.json"), diagnostic); }
+          catch (saveError) {
+            try { this.emit({ type: "warning", message: `无法保存失败详情：${saveError.message}；请保留本次终端输出。` }); } catch {}
+          }
+        }
+        throw error;
       } finally {
-        if (session && !keepAuto) await session.pause();
+        if (session && !keepAuto) {
+          try { await session.pause(); }
+          catch (cleanupError) {
+            if (!failure) throw cleanupError;
+            try { failure.details = { ...failure.details, cleanupError: { message: cleanupError.message } }; }
+            catch {} // A caller may throw an immutable error object.
+            try { this.emit({ type: "warning", message: `暂停清理也失败：${cleanupError.message}；请用 devsync status 检查。` }); }
+            catch {} // Reporting cleanup must never replace the original failure.
+          }
+        }
       }
     });
   }

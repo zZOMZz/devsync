@@ -9,7 +9,7 @@ const python = process.env.DEVSYNC_TEST_PYTHON || "python3";
 const hasPty = process.platform !== "win32" && spawnSync(python, ["--version"], { stdio: "ignore" }).status === 0;
 const driver = fileURLToPath(new URL("./fixtures/tui-driver.py", import.meta.url));
 const cli = fileURLToPath(new URL("../bin/devsync.mjs", import.meta.url));
-for (const scenario of ["success", "escape", "ctrl-c", "sigterm", "plain", "stage-interrupt", "preview", "confirm-skip", "confirm-cancel"])
+for (const scenario of ["failure", "success", "escape", "ctrl-c", "sigterm", "plain", "stage-interrupt", "preview", "confirm-skip", "confirm-cancel"])
   test(`PTY ${scenario}: keyboard flow restores terminal and releases the project lock`, { skip: !hasPty, timeout: 25000 }, async () => {
     const result = JSON.parse(await command(python, [driver, process.execPath, cli, scenario], { timeout: 20000 }));
     assert.equal(result.checks, "passed");

@@ -12,7 +12,7 @@ export function rowLabels(row) {
   if (!row.status) return { manager: "查询中", sync: "查询中" };
   const { manager, sync, auto } = row.status;
   return { manager: auto ? "已开启" : manager.state === "stopping" ? "停止中" : ["missing", "failed"].includes(manager.state) ? "管理异常" : sync.active ? "未托管" : "已关闭",
-    sync: syncLabels[sync.state] || "状态未知" };
+    sync: (syncLabels[sync.state] || "状态未知") + (row.status.lastFailure && sync.state !== "aligned" ? " · 上次失败" : "") };
 }
 
 function Panel({ model, selectedRoot, message, onAction }) {
@@ -33,11 +33,11 @@ function Panel({ model, selectedRoot, message, onAction }) {
   const index = Math.max(0, projects.findIndex(p => p.root === selection));
   const selected = projects[index];
   useEffect(() => { if (selected && selected.root !== selection) setSelection(selected.root); }, [selected?.root, selection]);
-  const pageSize = Math.max(1, rows - 15);
+  const pageSize = Math.max(1, rows - 17);
   const offset = Math.max(0, index - pageSize + 1);
   const detailLines = selected ? wrapLines([
     `项目：${selected.name}`, `远端：${selected.target || "未配置或不可用"}`,
-    selected.error ? `${selected.root}\n${selected.error.message}` : selected.status ? statusText(selected.status) : "正在查询…",
+    selected.error ? `${selected.root}\n${selected.error.message}` : selected.status ? statusText(selected.status, { verbose: true }) : "正在查询…",
     `更新：${selected.updatedAt || "等待首次查询"}`,
   ].join("\n"), columns).split("\n") : [];
   const maxScroll = Math.max(0, detailLines.length - pageSize);
@@ -82,18 +82,19 @@ function Panel({ model, selectedRoot, message, onAction }) {
       : projects.length ? [
         columns < 60 ? text("项目 · 自动同步 · 文件状态", { key: "header", dimColor: true })
           : h(Box, { key: "header" }, h(Box, { flexGrow: 1, flexBasis: 0 }, text("项目", { dimColor: true })),
-            h(Box, { width: 12 }, text("自动同步", { dimColor: true })), h(Box, { width: 14 }, text("文件状态", { dimColor: true }))),
+            h(Box, { width: 12 }, text("自动同步", { dimColor: true })), h(Box, { width: 24 }, text("文件状态", { dimColor: true }))),
         ...projects.slice(offset, offset + pageSize).map(project => {
           const selectedRow = project.root === selected?.root;
           const labels = rowLabels(project);
           return columns < 60 ? text(`${selectedRow ? "›" : " "} ${display(project.name)} · ${labels.manager} · ${labels.sync}`, { key: project.root, color: selectedRow ? "cyan" : undefined, wrap: "truncate-end" })
             : h(Box, { key: project.root },
               h(Box, { flexGrow: 1, flexBasis: 0 }, text(`${selectedRow ? "›" : " "} ${display(project.name)}`, { color: selectedRow ? "cyan" : undefined, wrap: "truncate-end" })),
-              h(Box, { width: 12 }, text(labels.manager)), h(Box, { width: 14 }, text(labels.sync)));
+              h(Box, { width: 12 }, text(labels.manager)), h(Box, { width: 24 }, text(labels.sync)));
         }),
       ] : line("尚无项目。按 a 添加已有项目；之后 init/config/start 成功时会自动登记。")),
     !detail && selected ? h(Box, { marginTop: 1, flexDirection: "column" }, text(display(selected.root), { dimColor: true, wrap: "truncate-middle" }),
-      text(display(selected.target || selected.error?.message || "等待状态查询…"), { dimColor: true, wrap: "truncate-end" })) : null,
+      text(display(selected.target || selected.error?.message || "等待状态查询…"), { dimColor: true, wrap: "truncate-end" }),
+      selected.status?.lastFailure ? text("上次失败：" + display(selected.status.lastFailure.issues[0]?.title || "查看详情") + " · Enter 查看原因与操作建议", { color: "yellow", wrap: "truncate-end" }) : null) : null,
     h(Box, { marginTop: 1, flexDirection: "column" },
       line(detail ? "↑↓ 滚动  Enter/Esc 返回  q 退出" : "↑↓ 选择  Enter 详情  s 开启  x 停止  r 刷新", { dimColor: true }),
       !detail ? line("a 添加  c 配置  l 重新定位  d 移除记录  q 退出", { dimColor: true }) : null,

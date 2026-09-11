@@ -1,3 +1,5 @@
+import { diagnosticText } from "./diagnostics.mjs";
+import { statusText } from "./status.mjs";
 import * as prompts from "@clack/prompts";
 import readline from "node:readline/promises";
 import { Writable } from "node:stream";
@@ -177,7 +179,24 @@ export class TerminalUI {
     return withProgress(label, task, { stream: this.rich ? process.stdout : process.stderr,
       interactive: this.rich, successSymbol: this.rich ? "◇" : "✓", failureSymbol: this.rich ? "■" : "✗" });
   }
+  status(result, options) {
+    const value = statusText(result, options);
+    if (this.rich) {
+      prompts.intro("devsync · 项目状态");
+      this.log(value.trim(), result.lastFailure || result.issues.some(i => i.severity === "error") ? "warn" : "info");
+      prompts.outro("完整结构化状态：devsync status --json");
+    } else if (!this.json) process.stdout.write(value);
+  }
   failure(error) {
+    const diagnostic = error.details?.diagnostic;
+    if (diagnostic) {
+      this.log(`操作未全部完成 · ${diagnostic.phase}`, "error");
+      if (diagnostic.remote) this.log(`远端：${diagnostic.remote.username}@${diagnostic.remote.host}:${diagnostic.remote.path}`);
+      this.log(diagnosticText(diagnostic), "warn");
+      this.log("可能已有部分文件同步。修复后执行 devsync sync 重试。\n查看失败记录：devsync status --verbose；结构化详情：devsync status --json");
+      if (this.rich) prompts.outro("本次操作结束");
+      return;
+    }
     if (this.rich && ["CANCELLED", "INTERRUPTED"].includes(error.code)) prompts.cancel(error.message);
     else this.log(error.message, "error");
   }

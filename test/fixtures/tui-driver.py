@@ -32,6 +32,11 @@ if scenario == 'preview':
     (root / 'old.txt').write_text('updated')
 pid, master = pty.fork()
 if pid == 0:
+    if scenario == 'failure':
+        module = (pathlib.Path(cli).resolve().parent.parent / 'src/terminal-ui.mjs').as_uri()
+        diagnostic = {'phase': '同步文件', 'issues': [{'code': 'FILE_WRITE', 'side': 'remote', 'path': 'resource/js/dist/开发目录/app.js', 'message': 'permission denied'}]}
+        script = 'import { TerminalUI } from '+json.dumps(module)+'; const ui = new TerminalUI(); ui.intro("devsync · 单次同步"); try { await ui.stage("同步文件", async () => { throw Object.assign(Error("failed"), {details:{diagnostic:'+json.dumps(diagnostic)+'}}); }); } catch (e) { ui.failure(e); }'
+        os.execvpe(node, [node, '--input-type=module', '-e', script], env)
     if scenario.startswith('confirm-'):
         module = (pathlib.Path(cli).resolve().parent.parent / 'src/terminal-ui.mjs').as_uri()
         script = 'import { TerminalUI } from '+json.dumps(module)+'; const result = await new TerminalUI().confirmSync({backup:{enabled:true}}); console.log("RESULT "+JSON.stringify(result));'
@@ -67,7 +72,14 @@ def finish():
     assert code is not None, text()[-3000:]
     for _ in range(3): pump(0.03)
 try:
-    if scenario.startswith('confirm-'):
+    if scenario == 'failure':
+        finish()
+        assert code == 0, text()
+        compact = re.sub(r'[\s│]', '', text())
+        for value in ['远端文件写入权限不足', 'resource/js/dist/开发目录/app.js', 'permissiondenied', '父目录', 'devsyncstatus--verbose', 'devsyncsyn', '可能已有部分文件同步']:
+            assert value in compact, text()
+        assert '同步存在冲突' not in text(), text()
+    elif scenario.startswith('confirm-'):
         wait_for('选择同步方式')
         send('\x1b[A\r' if scenario == 'confirm-skip' else '\r')
         finish()
@@ -81,7 +93,7 @@ try:
             assert value in text(), text()
         assert (root / '.sync/preview.json').exists()
     else: wait_for('选择开发机')
-    if scenario == 'preview' or scenario.startswith('confirm-'): pass
+    if scenario in ['preview', 'failure'] or scenario.startswith('confirm-'): pass
     elif scenario in ['escape', 'ctrl-c', 'sigterm']:
         if scenario == 'sigterm': os.kill(pid, signal.SIGTERM)
         else: send('\x1b' if scenario == 'escape' else '\x03')

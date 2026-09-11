@@ -1,3 +1,4 @@
+import { diagnose, diagnosticText } from "./diagnostics.mjs";
 import { healthy, isProcessAlive } from "./core.mjs";
 
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -9,7 +10,9 @@ const authenticationFailure = message => /authentication failed|incorrect passwo
 
 // Versioned, additive status contract. Engine data remains in the legacy
 // session field; consumers can use this projection without knowing Mutagen.
-export function projectStatus({ root, configured, control = {}, session = null, queryError = null, lastRun = null }) {
+export function projectStatus({ root, configured, control = {}, session = null, queryError = null, lastRun = null, lastFailure = null }) {
+  // A successful command supersedes a stale snapshot even if cleanup failed.
+  if (lastFailure && lastRun && lastRun.at >= lastFailure.at) lastFailure = null;
   const requested = control.auto === true;
   const running = isProcessAlive(control.pid);
   const manager = {
@@ -87,12 +90,18 @@ export function projectStatus({ root, configured, control = {}, session = null, 
     else if (halted) action("stop", "先停止同步并检查两端根目录，再决定恢复方式。");
     else if (fileProblems || conflicts) {
       if (active) action("stop", "先暂停同步，检查上述路径的冲突或权限。");
-      action("sync", "解决上述文件问题后重新同步。");
+      action("sync", [...new Set(issues.filter(i => i.severity === "error").map(i => diagnose(i).advice))].join(" ") + " 修复后重新同步。");
+    } else if (session?.lastError) {
+      action("sync", diagnose({ code: "SESSION_ERROR", message: session.lastError }).advice);
+    } else if (lastFailure && !healthy(session)) {
+      if (active) action("stop", "检查文件问题前可先暂停同步。");
+      const advice = [...new Set(lastFailure.issues.map(i => diagnose(i).advice))].join(" ");
+      action(lastFailure.issues.some(i => diagnose(i).category === "AUTH") ? "config" : "sync", advice + " 修复后重试。");
     } else if (queryError || !session || session.paused || !auto) {
       action("start", "如需持续同步，启动或恢复后台管理。");
       if (active || queryError) action("stop", "如需停止可能仍在运行的传输，停止当前项目同步。");
     } else if (syncState === "unknown") action("status", "稍后再次查询；若持续未知，检查 Mutagen 版本与状态。");
-    else if (session.lastError) action("sync", "排除连接或同步错误后立即重试。");
+
   }
   // Keep the original state vocabulary for existing consumers.
   const state = queryError ? "unavailable" : !session ? "not-started" : session.paused ? "paused" : syncState === "aligned" ? "watching" : "attention";
@@ -104,18 +113,25 @@ export function projectStatus({ root, configured, control = {}, session = null, 
       local: endpoint(session?.alpha), remote: endpoint(session?.beta), problemCount },
     issues, actions,
     error: issues.find(i => ["error", "warning"].includes(i.severity))?.message || null,
-    session, lastRun,
+    session, lastRun, lastFailure,
   };
 }
 
-export function statusText(result) {
+export function statusText(result, { verbose = false } = {}) {
   const managerLabels = { running: "运行中", stopping: "正在停止", stopped: "未运行", missing: "异常退出或未启动", failed: "因错误退出" };
   const syncLabels = { unknown: "状态未知，无法确认是否仍在传输", "not-started": "尚未创建会话", paused: "已暂停，当前文件是否对齐未知",
     aligned: "当前文件已对齐", disconnected: "端点未连接", scanning: "正在扫描文件", syncing: "正在同步文件", conflict: "存在同步冲突", error: "存在同步错误" };
   const lines = [result.project, `同步：${syncLabels[result.sync.state]}`, `后台重连管理：${managerLabels[result.manager.state]}`];
-  for (const issue of result.issues) {
-    const location = [issue.side === "local" ? "本地" : issue.side === "remote" ? "远端" : "", issue.path].filter(Boolean).join(" ");
-    lines.push(`[${issue.code}] ${location ? location + "：" : ""}${issue.message}`);
+  const fileIssues = result.issues.filter(i => /^(FILE_|SYNC_CONFLICT)/.test(i.code));
+  for (const issue of result.issues.filter(i => !fileIssues.includes(i))) {
+    lines.push(`[${issue.code}] ${issue.message}`);
+  }
+  if (fileIssues.length) lines.push(diagnosticText({ issues: fileIssues }, { verbose }));
+  if (result.lastFailure) {
+    lines.push(`上次命令失败：${result.lastFailure.at} · ${result.lastFailure.phase}`,
+      "以下为历史失败记录，不代表当前检查结果；本轮操作未全部完成，可能已有部分文件同步。",
+      ...(result.lastFailure.remote ? [`当时远端：${result.lastFailure.remote.username}@${result.lastFailure.remote.host}:${result.lastFailure.remote.path}`] : []),
+      diagnosticText(result.lastFailure, { verbose }));
   }
   if (result.lastRun) lines.push(`上次命令同步成功：${result.lastRun.at}，${result.lastRun.files} 个文件（不代表当前后台同步时间）。`);
   for (const action of result.actions) lines.push(`下一步：在项目目录执行 devsync ${action.command} — ${action.reason}`);

@@ -28,7 +28,7 @@ node bin/devsync.mjs status --dir /path/to/test-project --json
 npm test
 ```
 
-当前测试总数为 137。默认未设置真实程序路径时，3 项真实引擎测试会跳过；其余测试覆盖配置、规则、缓存、服务编排、项目索引、面板、JSON 和程序包安装。在 Windows 上还有平台限定测试会跳过，应以运行报告为准。
+当前测试总数为 141。默认未设置真实程序路径时，4 项真实引擎测试会跳过；其余测试覆盖配置、规则、缓存、服务编排、项目索引、面板、JSON 和程序包安装。在 Windows 上还有平台限定测试会跳过，应以运行报告为准。
 
 选择具体测试时：
 
@@ -54,6 +54,7 @@ node --test test/cli.test.mjs
 | [registry.test.mjs](../test/registry.test.mjs) | 索引只读、路径去重、跨进程并发写入、重新定位、错误文件保护 |
 | [dashboard.test.mjs](../test/dashboard.test.mjs) | 并发刷新、慢查询超时、取消、项目隔离，以及真实 Ink/Clack PTY 交互 |
 | [dashboard-engine.test.mjs](../test/dashboard-engine.test.mjs) | 真实 Mutagen 会话的面板开启/停止、退出不停止后台项目 |
+| [recovery.test.mjs](../test/recovery.test.mjs) | 删除归档后的真实 controller disabled 复现、残留控制器恢复、权限/持久会话保护和项目隔离 |
 
 面板测试可以单独运行 `node --test test/registry.test.mjs test/dashboard.test.mjs`。PTY 使用 Python 3 标准库，服务替身只读写临时目录；真实会话测试需提供 `DEVSYNC_TEST_MUTAGEN`。测试使用独立索引，不登记到用户的真实项目清单。
 | [backup.test.mjs](../test/backup.test.mjs) | 备份触发范围、大小估算、真实本地归档/清理、跨项目隔离及异常文件保护 |

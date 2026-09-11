@@ -142,3 +142,35 @@ test("missing tool metadata with evidence of prior activity is unknown rather th
   assert.equal(result.sync.aligned, null);
   assert.ok(result.issues.some(issue => issue.code === "SESSION_UNAVAILABLE"));
 });
+
+test("historical failures retain uncertainty, group paths and expose full details on request", async () => {
+  const { projectStatus, statusText } = await import("../src/status.mjs");
+  const { failureRecord } = await import("../src/diagnostics.mjs");
+  const lastFailure = failureRecord({ details: { issues: Array.from({ length: 9 }, (_, n) => ({ code: "FILE_WRITE", side: "remote", path: `dist/${n}.js`, message: "permission denied" })) } });
+  const status = projectStatus({ root: "/project", configured: true, session: { paused: true }, lastFailure });
+  assert.equal(status.sync.aligned, null);
+  const text = statusText(status);
+  assert.match(text, /历史失败记录/);
+  assert.match(text, /另有 6 项/);
+  assert.doesNotMatch(text, /dist\/8.js|devsync start/);
+  assert.match(statusText(status, { verbose: true }), /dist\/8.js/);
+  const recovered = projectStatus({ root: "/project", configured: true, session: { paused: true }, lastFailure, lastRun: { at: "9999", files: 9 } });
+  assert.equal(recovered.lastFailure, null);
+});
+
+test("engine omitted errors and root halts fail promptly without inventing a conflict", async () => {
+  const { Session } = await import("../src/session.mjs");
+  for (const state of [{ beta: { excludedTransitionProblems: 4 } }, { status: "halted-on-root-deletion" }]) {
+    const session = new Session("/tmp/test", "/unused", {});
+    session.run = async () => {};
+    session.get = async () => state;
+    await assert.rejects(session.flush(), error => error.code === "SYNC_PROBLEMS" && !error.message.includes("冲突"));
+  }
+});
+
+test("diagnosis distinguishes auth, permissions, storage, network and unknown errors", async () => {
+  const { diagnose } = await import("../src/diagnostics.mjs");
+  for (const [message, category] of [["Permission denied (publickey)", "AUTH"], ["permission denied", "PERMISSION"], ["no space left on device", "SPACE"], ["connection refused", "NETWORK"], ["unexpected engine failure", "SESSION_ERROR"]]) {
+    assert.equal(diagnose({ code: "SESSION_ERROR", message }).category, category);
+  }
+});

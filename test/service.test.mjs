@@ -37,6 +37,7 @@ async function fixture(t) {
       async resume() { calls.push("resume"); state.paused = false; }
       async flush() { calls.push("flush"); return { alpha: { files: 1 } }; }
       async run(args) { calls.push(args); }
+      async terminate() { calls.push(["sync", "terminate", this.name]); state = null; }
     },
   };
   return { root, config, calls, dependencies, service: new ProjectSync(root, { dependencies }), setState: value => { state = value; } };
@@ -338,4 +339,84 @@ test("registry failure is reported without undoing a successful synchronization"
   assert.equal(result.auto, true);
   assert.match(result.warnings[0], /登记到控制面板失败/);
   assert.equal(f.calls.at(-1), "startWorker");
+});
+
+test("pause cleanup and warning failures do not replace the original termination error", async t => {
+  for (const frozen of [false, true]) {
+    const f = await fixture(t);
+    f.setState({ paused: true });
+    const failure = Object.assign(Error("unable to remove archive from disk: permission denied"), { code: "EACCES" });
+    if (frozen) Object.freeze(failure);
+    let disabled = false;
+    f.dependencies.Session = class extends f.dependencies.Session {
+      async terminate() { disabled = true; throw failure; }
+      async pause() { if (disabled) throw Error("controller disabled"); await super.pause(); }
+    };
+    const service = new ProjectSync(f.root, { dependencies: f.dependencies,
+      onEvent: event => { if (event.type === "warning") throw Error("warning reporter failed"); } });
+    await assert.rejects(service.sync({ confirm: async () => true }), error => error === failure);
+    if (!frozen) assert.match(failure.details.cleanupError.message, /controller disabled/);
+    assert.equal(f.calls.some(call => Array.isArray(call) && call[0] === "create"), false);
+  }
+});
+
+test("a pause failure after successful one-shot transfer still reports failure", async t => {
+  const f = await fixture(t), cleanupError = Error("unable to pause");
+  let transferred = false;
+  f.dependencies.Session = class extends f.dependencies.Session {
+    async flush() { const result = await super.flush(); transferred = true; return result; }
+    async pause() { if (transferred) throw cleanupError; await super.pause(); }
+  };
+  await assert.rejects(new ProjectSync(f.root, { dependencies: f.dependencies }).sync({ confirm: async () => true }), error => error === cleanupError);
+});
+
+test("failure survives pause with redacted paths and clears after a successful retry", async t => {
+  const { Session } = await import("../src/session.mjs");
+  const f = await fixture(t);
+  let fail = true;
+  f.dependencies.Session.prototype.flush = async function () {
+    if (!fail) return { alpha: { files: 1 } };
+    const engine = new Session(f.root, "/unused", {});
+    engine.run = async () => {};
+    engine.get = async () => ({ beta: { transitionProblems: [{ path: "dist/app.js", error: "permission denied fixture-only" }] } });
+    return engine.flush();
+  };
+  f.dependencies.Session.prototype.pause = async () => { f.calls.push("pause"); f.setState({ paused: true }); };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies });
+  await assert.rejects(service.sync({ confirm: async () => true }), error => {
+    assert.equal(error.code, "SYNC_PROBLEMS");
+    assert.equal(error.details.diagnostic.phase, "同步文件");
+    assert.doesNotMatch(JSON.stringify(error.details), /fixture-only/);
+    return true;
+  });
+  const status = await service.status();
+  assert.equal(status.sync.state, "paused");
+  assert.equal(status.sync.problemCount, 0);
+  assert.equal(status.lastFailure.issues[0].path, "dist/app.js");
+  assert.equal(status.lastFailure.issues[0].category, "PERMISSION");
+  assert.deepEqual(status.actions.map(a => a.command), ["sync"]);
+  const saved = await fs.readFile(path.join(f.root, ".sync/last-failure.json"), "utf8");
+  assert.doesNotMatch(saved, /fixture-only/);
+  fail = false;
+  await service.sync();
+  assert.equal((await service.status()).lastFailure, null);
+  await assert.rejects(fs.access(path.join(f.root, ".sync/last-failure.json")), { code: "ENOENT" });
+});
+
+test("cancel preserves prior diagnostics and snapshot write failure never masks sync error", async t => {
+  const f = await fixture(t);
+  const file = path.join(f.root, ".sync/last-failure.json");
+  const previous = { version: 1, at: "2026-09-01", phase: "同步文件", issues: [] };
+  await writeJson(file, previous);
+  await assert.rejects(f.service.sync(), { code: "CANCELLED" });
+  assert.deepEqual(await readJson(file), previous);
+  await fs.rm(file);
+  await fs.mkdir(file);
+  const original = Error("original transfer error");
+  f.dependencies.Session.prototype.flush = async () => { throw original; };
+  const service = new ProjectSync(f.root, { dependencies: f.dependencies, onEvent: event => {
+    if (event.type === "warning") throw Error("reporter failed");
+  } });
+  await assert.rejects(service.sync({ confirm: async () => true }), error => error === original);
+  assert.equal(f.calls.at(-1), "pause");
 });

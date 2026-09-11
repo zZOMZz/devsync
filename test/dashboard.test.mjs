@@ -98,7 +98,7 @@ const python = process.env.DEVSYNC_TEST_PYTHON || "python3";
 const { spawnSync } = await import("node:child_process");
 const { fileURLToPath } = await import("node:url");
 const hasPty = process.platform !== "win32" && spawnSync(python, ["--version"], { stdio: "ignore" }).status === 0;
-for (const scenario of ["manage", "cancel-start", "configure", "index", "relocate", "details", "ctrl-c", "sigterm", "prompt-interrupt"])
+for (const scenario of ["failure", "manage", "cancel-start", "configure", "index", "relocate", "details", "ctrl-c", "sigterm", "prompt-interrupt"])
   test(`dashboard PTY ${scenario}: Ink/Clack transitions preserve other projects and terminal state`, { skip: !hasPty, timeout: 25000 }, async () => {
     const result = JSON.parse(await command(python, [fileURLToPath(new URL("./fixtures/dashboard-driver.py", import.meta.url)), process.execPath,
       fileURLToPath(new URL("./fixtures/dashboard-app.mjs", import.meta.url)), scenario], { timeout: 20000 }));

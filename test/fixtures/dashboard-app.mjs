@@ -23,7 +23,7 @@ const service = root => ({
     const value = (await readJson(stateFile))[root] || { auto: false };
     return projectStatus({ root, configured: true, control: value.auto ? { auto: true, pid: process.pid } : {}, session: value.auto ? {
       name: "project-sync", paused: false, status: "watching", alpha: { connected: true, scanned: true, files: 1 }, beta: { connected: true, scanned: true, files: 1 },
-    } : { paused: true } });
+    } : { paused: true }, lastFailure: value.lastFailure || null });
   },
   sync: async ({ auto, confirm }) => {
     const preview = { scope: { local: root, remote: { host: "dev", username: "alice", port: 22, path: "/srv/project" }, envFiles: [], backup: { mode: "off", keep: 3 } },

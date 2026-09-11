@@ -19,6 +19,24 @@ npm ci
 npm install --global .
 ```
 
+启用 zsh 的 Tab 补全（只需安装一次）：
+
+```bash
+devsync completion install zsh
+```
+
+新开终端后，`devsync dash<Tab>` 补全为 `dashboard`，`devsync st<Tab>` 展示 `start/status/stop` 及说明，`devsync status --<Tab>` 补全选项，`--dir` / `-C` 后补全目录。生成过程不会读取项目配置、访问 SSH 或启动同步。
+
+安装命令在 `${ZDOTDIR:-$HOME}/.zshrc` 末尾维护一个带标记的区块；必要时初始化 zsh 补全系统，每次交互式 Shell 启动时加载当前 devsync 的规则。因此升级或修改链接到的源码后，新开终端即可使用新补全。重复安装不会追加多个区块，原有配置和 dotfile 符号链接会保留。
+
+```bash
+devsync completion zsh             # 只输出脚本，适合自行配置或打包
+devsync completion install zsh     # 安装；支持 --json 查看结果
+devsync completion uninstall zsh   # 只移除 devsync 管理的区块
+```
+
+目前仅支持 zsh。卸载补全后新开终端生效；不会改动其他工具的补全配置。npm 安装过程本身不会修改 Shell 配置。
+
 也可以直接使用源码运行：
 
 ```bash
@@ -175,6 +193,13 @@ devsync sync --json --yes
 未来 VS Code 插件可调用 CLI，也可以调用包导出的 `ProjectSync`、`resolveProject`、`loadProject`、`normalizeRules` 和 `SyncError`。核心 API 接收项目路径、事件回调、确认回调和可选 AbortSignal，不读取终端输入。CLI 负责参数解析、配置向导与输出，Mutagen 负责实际传输，后台管理进程负责密码重连。
 
 ## 故障处理与范围
+
+同步命令失败时会按权限、空间、连接、扫描/写入或实际冲突汇总原因，显示问题路径、原始错误和操作建议。失败详情在暂停会话前保存至私有 `.sync/last-failure.json`，`status` 和控制面板会明确标为“上次命令失败”，不代表重新检查过文件。下次命令同步成功后清除该记录；取消确认不会覆盖历史失败。
+
+默认每类问题显示最多 3 个示例，`devsync status --verbose` 展示全部已记录详情，`devsync status --json` 的 `lastFailure` 提供时间、阶段、当时远端和问题列表。引擎省略的路径只能显示数量。控制面板列表提示上次失败，Enter 进入详情后可上下滚动查看原因和建议。
+
+
+- `controller disabled`：若旧会话的磁盘记录已不存在，工具会重启当前项目独立的 daemon，清除残留控制器后重新进入正常确认/同步流程。不会清空 `.sync` 或删除连接、凭据和规则。若仍有会话记录或遇到权限错误，会保留错误供排查；收尾暂停失败也不会覆盖最初的失败原因。
 
 - 地址解析/连接失败：检查网络、VPN、SSH 别名、账号和端口。密码错误与密钥认证失败分别提示，执行 `devsync config` 修正。
 - 下载失败：检查代理、镜像或使用本地官方程序包；与远端登录认证无关。校验失败的包不会启用。

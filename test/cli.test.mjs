@@ -58,6 +58,8 @@ test("packed npm artifact installs into an isolated prefix and runs outside its 
   const pack = JSON.parse(await command(npm, ["--cache", path.join(base, "npm-cache"), "pack", "--json", "--ignore-scripts", "--pack-destination", base], { cwd: packageRoot }))[0];
   assert.ok(pack.files.some(file => file.path === "bin/devsync.mjs"));
   assert.ok(pack.files.some(file => file.path === "src/releases.json"));
+  assert.ok(pack.files.some(file => file.path === "src/completion.mjs"));
+  assert.ok(pack.files.some(file => file.path === "src/commands.mjs"));
   assert.ok(pack.files.some(file => file.path === "node_modules/ink/package.json"));
   assert.ok(pack.files.some(file => file.path === "node_modules/react/package.json"));
   assert.ok(pack.files.every(file => !file.path.startsWith("test/") && !file.path.startsWith(".sync/")));
@@ -68,6 +70,7 @@ test("packed npm artifact installs into an isolated prefix and runs outside its 
   const result = JSON.parse(await command(path.join(prefix, "bin/devsync"), ["status", "--json"], { cwd: project }));
   assert.equal(result.project, await fs.realpath(project));
   assert.equal(result.ok, true);
+  assert.match(await command(path.join(prefix, "bin/devsync"), ["completion", "zsh"], { cwd: project }), /^#compdef devsync/);
   const view = pathToFileURL(path.join(prefix, "lib/node_modules/devsync/src/dashboard-view.mjs")).href;
   assert.equal((await command(process.execPath, ["--input-type=module", "-e", `console.log(typeof (await import(${JSON.stringify(view)})).dashboardView)`])).trim(), "function");
 });
